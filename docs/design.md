@@ -91,7 +91,7 @@ onRequest(body, ctx)
  │     超时 optimizeTimeoutMs（15s）/ 非 200 / 空内容 → 记 stats(action=optimize-fail) 放行
  │
  ├─ 6. 输出净化 + 护栏：剥离 output-strategy（ponytail/ADHD）注入的
- │     "下一步：…""风险：…"式尾巴；空、<0.4×、>3×、命中尾标 → 弃用放行
+ │     "下一步：…""风险：…"式尾巴；空、<0.4×、>max(3×,1500)、超6000 → 弃用放行（风格污染用 TAIL_NOTE 预防）
  │
  └─ 7. 替换（span 匹配守卫）：提取文本必须在最后一条 user 消息的文本 part
        内找到匹配（先原样、再空白规范化，且唯一）；ctx.query 与消息正文
@@ -147,7 +147,7 @@ onRequest(body, ctx)
 | 替换必须保留非文本 part | 见步骤 4。图片、tool_result 不能被字符串覆盖 |
 | 同一条提示词会被 agent 重试 | 进程内缓存 `hash(query)→优化结果`，TTL 60s。命中则直接替换，不再打第二次优化 |
 | 中英模板 | CJK 占比 ≥0.3 用 `professional`，否则 `professional_en`。`template` 显式指定时不自动切 |
-| 优化结果护栏 | 空、短于原文 0.4 倍、长于 3 倍、或命中 ponytail 尾标（`Nothing else to do` / `Next:` / `风险：`）→ 弃用，原文放行 |
+| 优化结果护栏 | 空、短于原文 0.4 倍、长于 max(3×原文,1500)、或超 6000 绝对上限 → 弃用，原文放行。output-strategy 风格污染用 TAIL_NOTE 在 system 预防；v0.1 未做尾标正则检测 |
 
 `ctx` 官方列出的字段：`protocol, model, stream, path, agent, session, cwd, query, options, signal`。`origin` / `kind` 是探针里见过、文档这段没写的，继续用，但实现时缺字段就当「未知→放行」。
 
@@ -259,7 +259,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | 插件异常阻断请求 | 全链路 try/catch，任何异常 `return undefined`（fail-open） |
 | 网关自环 | 步骤 0 按 `body.model` 跳过优化组/决策组自身的请求 |
 | 机器调用被误优化 | `skipToolless` + `bypassAgents` + `bypassModels` + `kind=subagent` + 压缩/进度标记。Magpie 自有标题请求官方已跳过 hook |
-| decider 把追问误判为新任务 | confidence<0.6 放行 + 输出护栏（0.4×/3×/尾标）+ dryRun 期统计误判率，超标调 criteria 或关插件 |
+| decider 把追问误判为新任务 | confidence<0.6 放行 + 输出护栏（0.4×/max(3×,1500)）+ dryRun 期统计误判率，超标调 criteria 或关插件 |
 | 链预算被钳在 10s（文档与实现不符） | 写码前 sleep 探针实测（§12-2）；被钳则 optimizeTimeoutMs 降 8s、模板用 basic 缩短输出 |
 | 重试把同一句优化两次 | `cacheTtlMs` 60s |
 | dryRun 把提示词写进磁盘 | 默认 `logText=false`，只记长度和 hash |

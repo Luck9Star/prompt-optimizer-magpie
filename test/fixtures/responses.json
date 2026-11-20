@@ -1,0 +1,10 @@
+{
+  "model": "gpt-5.2",
+  "stream": true,
+  "tools": [{ "type": "function", "name": "shell", "description": "run a shell command", "parameters": { "type": "object" } }],
+  "instructions": "You are Codex.",
+  "input": [
+    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "<environment_context>\nWorking directory: /home/user/proj\nIs directory a Git repo: Yes\nPlatform: linux\n</environment_context>" }] },
+    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "review this repo and list the top issues" }] }
+  ]
+}

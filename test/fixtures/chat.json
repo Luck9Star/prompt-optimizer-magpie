@@ -1,0 +1,11 @@
+{
+  "model": "group/main",
+  "stream": true,
+  "tools": [{ "type": "function", "function": { "name": "bash", "description": "run a command", "parameters": { "type": "object" } } }],
+  "messages": [
+    { "role": "system", "content": "You are a senior engineer." },
+    { "role": "user", "content": "<acp tokens=\"1K\" type=\"text\">m00001</acp>\n\n[session context: memory, skills, 55k chars omitted]" },
+    { "role": "assistant", "content": "Understood." },
+    { "role": "user", "content": "帮我看看这个报错，然后修一下" }
+  ]
+}

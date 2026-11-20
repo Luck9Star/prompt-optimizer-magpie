@@ -1,9 +1,12 @@
 {
   "name": "prompt-optimizer-magpie",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Self-contained Magpie gateway request hook that rewrites vague first-turn prompts into precise ones before they reach your model. Fail-open by design.",
   "type": "module",
   "license": "AGPL-3.0-only",
+  "scripts": {
+    "test": "node --test"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Luck9Star/prompt-optimizer-magpie.git"
@@ -17,7 +20,23 @@
     "llm-gateway"
   ],
   "magpie": {
-    "hooks": "./hooks.mjs"
+    "hooks": "./hooks.mjs",
+    "options": {
+      "enabled": true,
+      "dryRun": true,
+      "deciderGroup": "group/route-decider",
+      "optimizeGroup": "group/prompt-optimize",
+      "minChars": 6,
+      "maxChars": 12000,
+      "bypassPrefix": "!!",
+      "bypassModels": [],
+      "allowedOrigins": [],
+      "skipToolless": true,
+      "deciderTimeoutMs": 1500,
+      "optimizeTimeoutMs": 15000,
+      "gatewayTimeoutMs": 25000,
+      "gatewayUrl": "http://127.0.0.1:3425"
+    }
   },
   "engines": {
     "bun": ">=1.4.2"
