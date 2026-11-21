@@ -219,6 +219,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | `optimizerGroup` | group/prompt-optimize | 优化模型组（order 路由） |
 | `deciderGroup` | group/route-decider | 长线程新任务判定必需；留空 = 纯规则模式（长会话将全部放行，只适合短会话客户端） |
 | `optimizerMode` / `deciderFallback` | auto / rule | merged 在首轮合并判断和改写；deciderFallback 可指定 merged，熔断期间回落规则 |
+| `rollout` | null | 指定参与首轮实验的 agent、实验号及 auto/merged 百分比；缺省使用原有策略 |
 | `minChars` | 6 | 短回复硬放行，不进决策。中文 6 字（约 2 词）以下基本无优化空间："改一下""好""继续看"。CJK 单字信息密度高，阈值比英文词数口径小；dryRun 统计 6–10 字段命中率后微调 |
 | `maxChars` | 12000 | 兜底上限（防粘贴整本书），正常范围内超长文本交决策模型判，不硬放行 |
 | `skipPrefix` | !! | 手动绕过前缀 |
@@ -231,6 +232,8 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | `port` | 0 | 0 = OS 自动分配；回退候选 3497 |
 | `bypassAgents` | [] | 出现新的机器客户端时按 ctx.agent 加白。OpenAI SDK 回调（agent="OpenAI"）实际请求 group/prompt-optimize，已被步骤 0 模型自环守卫覆盖，不需要默认值 |
 | `bypassModels` | [] | `body.model` 命中即放行——把已知的机器任务模型（如 Hermes 会话压缩 `group/bili-summary`）排除，无需为此建专门组 |
+
+启用首轮实验前，先确认所选 agent 的 `ctx.session` 为跨请求稳定的字符串。在 options 中设置 `"rollout": {"experimentId":"first-turn-v1","agents":["cli"],"autoPercent":15.5,"mergedPercent":5}`。两个比例都要显式填写，可为零或小数，总和必须小于 100，以保留同期原文直通对照。上例合格首轮的目标分配比例依次为 15.5%、5% 和 79.5%。同一实验、agent 和会话固定分桶。把 `mergedPercent` 调零即可将 merged 组撤回到直通组，保留原 auto 组的会话分配；将 `rollout` 设为 null 恢复全局策略。会话标识缺失、未授权 agent、线程以及配置无效均使用全局策略。覆盖率以合格首轮中的已分桶和缺标识请求为分母。
 
 `gatewayTimeoutMs: 25000` 在 hooks.mjs 内声明，不进 options（改它要连带评估整链预算）。
 

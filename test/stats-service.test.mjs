@@ -6,7 +6,7 @@ import { createServer, get } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeStatsServer, startStatsService, aggregate } from "../lib/stats-service.mjs";
+import { makeStatsServer, startStatsService, aggregate, renderPage } from "../lib/stats-service.mjs";
 import { readEvents } from "../lib/stats.mjs";
 
 const once = (port, path) =>
@@ -174,4 +174,26 @@ test("stats-service: one denominator per experiment, version and arm; historical
   assert.match(html, /output-guard \(1\)/);
   assert.match(html, /Recent 1 detailed events/);
   assert.deepEqual(aggregate([detail]).requestGroups, []);
+});
+
+
+test("session coverage counts eligible first turns across arms per experiment and version", () => {
+  const sample = { action: "summary", experimentId: "A", version: "v1", group: "auto", turn: "first",
+    assignment: "bucketed", finalAction: "pass", reason: "test", modelCalls: 1, durationMs: 1 };
+  const excluded = [{ turn: "thread" }, { assignment: "thread" }, { assignment: "out-of-scope" },
+    { assignment: "off" }, { assignment: "invalid" }, { assignment: undefined }, { experimentId: "" },
+    { action: "optimize" }].map(overrides => ({ ...sample, ...overrides }));
+  const empty = aggregate(excluded);
+  assert.deepEqual(empty.sessionCoverage, []);
+  assert.match(renderPage(empty, []), /No eligible rollout requests/);
+
+  const stats = aggregate([...excluded, sample, { ...sample, group: "control" },
+    { ...sample, group: "baseline", assignment: "no-session" },
+    { ...sample, experimentId: "B" }, { ...sample, version: "v2", assignment: "no-session" }]);
+  assert.deepEqual(stats.sessionCoverage, [
+    { experimentId: "A", version: "v1", total: 3, bucketed: 2, missingSessions: 1, rate: 2 / 3 },
+    { experimentId: "B", version: "v1", total: 1, bucketed: 1, missingSessions: 0, rate: 1 },
+    { experimentId: "A", version: "v2", total: 1, bucketed: 0, missingSessions: 1, rate: 0 },
+  ]);
+  assert.match(renderPage(stats, []), /2 \/ 3 \(66\.7%\)<\/td><td>1<\/td>/);
 });

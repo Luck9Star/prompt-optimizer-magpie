@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { onRequest } from "../hooks.mjs";
+import { assignRollout } from "../lib/rollout.mjs";
 import { getTemplate } from "../templates/index.mjs";
 
 const orig = "请帮我整理项目需求";
@@ -144,4 +145,37 @@ test("only eligible requests emit a body-free summary even when audit details ar
   assert.equal(event.modelCalls, fetch.mock.callCount());
   assert.equal(event.finalAction, "pass");
   assert.ok(!line.includes(orig));
+});
+
+test("rollout uses true passthrough, honors configured arms, and keeps missing sessions on baseline", async t => {
+  const c = { ...context(t, { gatewayUrl: "http://rollout.invalid", optimizerMode: "auto", dryRun: true, cacheTtlMs: 0 }),
+    agent: "cli", session: "TEST-SESSION-MUST-NOT-BE-LOGGED" };
+  const paths = [];
+  t.mock.method(globalThis, "fetch", async url => {
+    paths.push(new URL(url).pathname);
+    if (url.endsWith("systemone")) return { ok: true, json: async () => ({ answers: { noul: { choice: "new_task", confidence: 1 } } }) };
+    return completion(`[tpl:professional]\n${rewritten}`);
+  });
+  const base = { experimentId: "demo", agents: ["cli"], autoPercent: 0, mergedPercent: 0 };
+  c.options.rollout = { ...base, mergedPercent: 40, autoPercent: 40 };
+  for (const [group, calls] of [["control", []], ["merged", ["/v1/chat/completions"]],
+    ["auto", ["/v1/systemone", "/v1/chat/completions"]]]) {
+    const session = Array.from({ length: 100 }, (_, i) => "TEST-SESSION-" + i)
+      .find(session => assignRollout(c.options.rollout, { ...c, session }, false).group === group);
+    assert.ok(session);
+    c.session = session;
+    assert.equal(await onRequest(body, c), undefined);
+    assert.deepEqual(paths.splice(0), calls);
+  }
+  c.options.rollout = base;
+  await onRequest(body, { ...c, session: "" });
+  assert.equal(paths.length, 2);
+  const lines = readFileSync(join(c.options.statsDir, new Date().toISOString().slice(0, 10) + ".ndjson"), "utf8");
+  assert.ok(!lines.includes("TEST-SESSION-"));
+  const events = lines.trim().split("\n").map(s => JSON.parse(s)).filter(e => e.action === "summary");
+  assert.deepEqual(events.map(e => [e.group, e.mode, e.modelCalls, e.finalAction]), [
+    ["control", "direct", 0, "pass"], ["merged", "merged", 1, "dry-run"], ["auto", "auto", 2, "dry-run"], ["baseline", "auto", 2, "dry-run"],
+  ]);
+  assert.ok(events.every(e => e.experimentId === "demo" && /^[0-9a-f]+$/.test(e.version)));
+  assert.equal(events.at(-1).assignment, "no-session");
 });

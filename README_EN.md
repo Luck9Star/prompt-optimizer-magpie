@@ -82,6 +82,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `allowedOrigins` | `[]` | when non-empty, only these `ctx.origin` values pass; a missing origin is fail-open (not blocked) |
 | `skipToolless` | `true` | requests without tools pass through (mostly machine/chit-chat calls) |
 | `optimizerMode` | `auto` | `merged` = a single optimize call does new-task detection + template tier + rewrite (first-line `[tpl:…]` / `[passthrough]` marker protocol); `auto` (default) keeps the current two-stage decider→optimize flow |
+| `rollout` | `null` | First-turn session experiment (example below) |
 | `deciderFallback` | `rule` | fallback when the decider fails in `auto` mode: `rule` (default) = rules-only path; `merged` = reroute to the single merged call (drops back to `rule` while the breaker is open) |
 | `deciderTimeoutMs` | `1500` | decider call timeout |
 | `gatewayTimeoutMs` | `25000` | **must be set explicitly** — per-hook budget, see above |
@@ -103,6 +104,8 @@ Substitution touches only the **uniquely matched** user-text span in the last us
 ## Stats & rollout
 
 Each eligible request writes one text-free `action=summary` record, independently of detail logging. The dashboard groups sample counts, applied rewrites, pass reasons, model calls and hook p95 by experiment, content version and arm. Older day files contribute detail events only. See the [blind evaluation guide](eval/README.md) for offline samples.
+
+Enable `rollout` only for agents whose `ctx.session` is stable across retries. Example: `"rollout":{"experimentId":"first-v1","agents":["codex"],"autoPercent":40,"mergedPercent":10}` assigns 40% of eligible first turns to auto, 10% to merged, and 50% to true passthrough. Percentages must sum to less than 100. Setting mergedPercent to 0 preserves auto buckets; setting rollout to null restores the global configuration. Missing sessions use baseline and are counted in the dashboard. Threads and unlisted agents keep their global routing. Experiment arms inherit dryRun. The content SHA identifies both terminal summaries and cache entries across template, decision and protocol revisions.
 
 The hook appends audit events to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry redacted, clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error), `decide` (decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence), `optimize` (dry-run / optimized / merged-optimized / cache-hit / no-span).
 

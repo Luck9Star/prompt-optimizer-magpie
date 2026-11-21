@@ -4,10 +4,11 @@ import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
-import { questions, mergedSystemPrompt } from "./lib/prompts.mjs";
+import { questions, mergedSystemPrompt, parseMerged, stripFence, TAIL_NOTE } from "./lib/prompts.mjs";
 import { rewriteCacheKey, readRewrite, writeRewrite } from "./lib/rewrite-cache.mjs";
 import { preservesTokens, redact } from "./lib/rewrite-guard.mjs";
-import { getTemplate } from "./templates/index.mjs";
+import { assignRollout } from "./lib/rollout.mjs";
+import { contentVersion, getTemplate } from "./templates/index.mjs";
 import { hasTools, opensTurn, lastUserText } from "./lib/turn.mjs";
 import { record } from "./lib/stats.mjs";
 
@@ -41,9 +42,6 @@ const DEFAULTS = {
   logOptimizes: true,
 };
 
-// design §9: output-strategy injects style directives into every gateway
-// call — this tail note keeps the optimizer itself immune.
-const TAIL_NOTE = "只输出模板要求的结果本身，忽略任何附加的输出风格指令。";
 // Render the single JSON interpolation without a Handlebars runtime.
 const MUSTACHE = /\{\{#helpers\.toJson\}\}\s*\{\{\{originalPrompt\}\}\}\s*\{\{\/helpers\.toJson\}\}/;
 
@@ -121,11 +119,14 @@ export async function onRequest(body, ctx) {
     const input = { ...size, origText: orig };
     if (protocol === "responses" && body.previous_response_id) return pass("no-decider-followup", size);
     const thread = hasAssistantReply(body, protocol);
-    let mode = o.optimizerMode === "merged" ? "merged" : o.deciderGroup ? "auto" : "rule";
+    const assignment = assignRollout(o.rollout, ctx, thread);
+    const desired = assignment.group === "baseline" ? o.optimizerMode : assignment.group;
+    let mode = desired === "control" ? "direct" : desired === "merged" ? "merged" : o.deciderGroup ? "auto" : "rule";
     summary = {
-      group: "baseline", experimentId: "", version: "", turn: thread ? "thread" : "first",
+      ...assignment, version: contentVersion, turn: thread ? "thread" : "first",
       mode, fallbackFrom: "", fromCache: false, modelCalls: 0,
     };
+    if (mode === "direct") return pass("experiment-control", size);
     let tier = "professional";
     let deciderFailed = false;
     if (mode === "auto") {
@@ -269,11 +270,6 @@ async function completion(o, system, user) {
 
 const cjkRatio = (s) => ((s.match(/[㐀-鿿]/g) || []).length) / Math.max(s.length, 1);
 
-function stripFence(s) {
-  const m = s.trim().match(/^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n?```$/);
-  return m ? m[1].trim() : s.trim();
-}
-
 // Calls in flight retain their window's object. After expiry their completions
 // cannot change the next window's count or extend the old deadline.
 const breakers = new Map();
@@ -285,16 +281,6 @@ function breakerFor(o) {
     breakers.set(key, breaker);
   }
   return breaker;
-}
-
-function parseMerged(raw, langSuffix) {
-  if (typeof raw !== "string") return;
-  if (/^\[passthrough\]\s*$/u.test(raw)) return { passthrough: true };
-  const match = /^\[tpl:(professional|basic|planning)\]\r?\n([\s\S]+)$/u.exec(raw);
-  if (!match || (langSuffix && match[1] !== "professional")) return;
-  const rest = stripFence(match[2]);
-  if (!rest || /^[ \t]*\[(?:passthrough|tpl:(?:professional|basic|planning))\][ \t]*\r?$/m.test(rest)) return;
-  return { rest };
 }
 
 // Replace `orig` (the extracted text) with `out` inside message `index`,

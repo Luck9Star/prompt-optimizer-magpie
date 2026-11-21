@@ -41,6 +41,7 @@
       "deciderGroup": "group/route-decider",
       "optimizeGroup": "group/prompt-optimize",
       "optimizerMode": "auto",
+      "rollout": null,
       "deciderFallback": "rule",
       "bypassPrefix": ["!!", "##"],
       "bypassModels": [],
