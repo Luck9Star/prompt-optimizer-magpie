@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { stripBC } from "../lib/turn.mjs";
 import { makeStatsServer } from "../lib/stats-service.mjs";
 import { get } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -46,11 +46,22 @@ test("stats server: foreign Host header → 403, loopback Host → 200", async (
   }
 });
 
-test("serve.mjs: invalid POM_RETAIN_DAYS falls back to 7 with a warning", async () => {
-  // source-level check: the fallback expression must be Number.isFinite, not `|| 0`
-  const src = (await import("node:fs")).readFileSync(new URL("../serve.mjs", import.meta.url), "utf8");
-  assert.match(src, /Number\.isFinite\(RAW_RETAIN\) \? RAW_RETAIN : 7/);
-  assert.doesNotMatch(src, /POM_RETAIN_DAYS \?\? 7\) \|\| 0/);
+test("stats retention: invalid values warn and use seven days; explicit opt-outs keep history", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pom-retain-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const warn = t.mock.method(console, "warn", () => {});
+  const dayFile = (age) => join(dir, new Date(Date.now() - age * 86400_000).toISOString().slice(0, 10) + ".ndjson");
+  for (const value of ["", "  ", "abc", "1e300", "0", "-1"]) {
+    const keep = Number(value) <= 0 && value.trim() !== "";
+    writeFileSync(dayFile(8), "");
+    writeFileSync(dayFile(7), "");
+    const server = makeStatsServer({ statsDir: dir, retainDays: value });
+    server.emit("listening");
+    server.emit("close");
+    assert.equal(existsSync(dayFile(8)), keep, value);
+    assert.ok(existsSync(dayFile(7)), value);
+  }
+  assert.equal(warn.mock.callCount(), 4);
 });
 
 test("index.mjs server(): port 0 must survive (ephemeral), not become 3497", async () => {

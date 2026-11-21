@@ -1,10 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { prune } from "../lib/stats.mjs";
+import { prune, readEvents } from "../lib/stats.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "pom-prune-"));
 const NOW = Date.now();
@@ -43,32 +42,18 @@ test("prune: missing dir → 0, no throw", () => {
   assert.equal(prune(7, NOW, join(dir, "nope")), 0);
 });
 
-const FILE = fileURLToPath(new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url));
-const rowsFor = (agent) => { try {
-  return readFileSync(FILE, "utf8").trim().split("\n").filter(Boolean)
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .filter((r) => r && r.agent === agent);
-} catch { return []; } };
-const waitAgent = async (agent, ms = 2000) => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (rowsFor(agent).length) return rowsFor(agent);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-  }
-  return rowsFor(agent);
-};
+const rowsFor = (agent) => readEvents(dir).filter((r) => r.agent === agent);
 
 test("log levels: logSkips=false suppresses routine pass but keeps failures", async () => {
   const { onRequest } = await import("../hooks.mjs");
   // routine pass: no tools → no-tools gate, logSkips=false must suppress it
   await onRequest({ messages: [{ role: "user", content: "无工具的普通提问不应记录" }] },
-    { protocol: "chat", agent: "lv-skip", kind: "", query: "", options: { logSkips: false } });
-  await new Promise((r) => setTimeout(r, 300));
+    { protocol: "chat", agent: "lv-skip", kind: "", query: "", options: { statsDir: dir, cacheTtlMs: 0, logSkips: false } });
   assert.equal(rowsFor("lv-skip").length, 0, "routine pass suppressed when logSkips=false");
   // failure pass: dead gateway + valid new task → optimize-fail must survive
   await onRequest({ tools: [{}], messages: [{ role: "user", content: "触发优化失败但失败事件必须保留可排障的问题描述" }] },
-    { protocol: "chat", agent: "lv-fail", kind: "", query: "", options: { logSkips: false, gatewayUrl: "http://127.0.0.1:1", deciderGroup: "" } });
-  const failRows = await waitAgent("lv-fail");
+    { protocol: "chat", agent: "lv-fail", kind: "", query: "", options: { statsDir: dir, cacheTtlMs: 0, logSkips: false, gatewayUrl: "http://127.0.0.1:1", deciderGroup: "" } });
+  const failRows = rowsFor("lv-fail");
   assert.ok(failRows.some((r) => r.reason === "optimize-fail"), "failure-class pass still logged when logSkips=false");
 });
 
@@ -78,8 +63,7 @@ test("log levels: logOptimizes=false suppresses success-path optimize/decide eve
   const gw = await mockGateway(); // live gateway → full success path
   try {
     await onRequest({ tools: [{}], messages: [{ role: "user", content: "关闭优化日志后不应记录成功优化轨迹的事件内容" }] },
-      { protocol: "chat", agent: "lv-opt-off", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: gw.url, dryRun: false } });
-    await new Promise((r) => setTimeout(r, 400));
+      { protocol: "chat", agent: "lv-opt-off", kind: "", query: "", options: { statsDir: dir, cacheTtlMs: 0, logOptimizes: false, gatewayUrl: gw.url, dryRun: false } });
     const rows = rowsFor("lv-opt-off");
     assert.equal(rows.filter((r) => r.action === "optimize" || r.action === "decide").length, 0,
       "success-path optimize/decide events suppressed when logOptimizes=false");
@@ -88,16 +72,16 @@ test("log levels: logOptimizes=false suppresses success-path optimize/decide eve
   }
 });
 
-test("log levels: logOptimizes=false keeps decider-fail (failure survives the switch)", async () => {
+test("log levels: logOptimizes=false keeps decider-fail-rule (failure survives the switch)", async () => {
   const { onRequest } = await import("../hooks.mjs");
-  // dead gateway + live deciderGroup → decide() throws → decider-fail;
+  // dead gateway + live deciderGroup → decide() throws → decider-fail-rule;
   // README promises failures ignore logOptimizes — regression for the
   // switch swallowing decide/decider-fail wholesale.
   await onRequest({ tools: [{}], messages: [{ role: "user", content: "决策器失败时事件必须保留不得被降噪开关吞掉" }] },
-    { protocol: "chat", agent: "lv-dec-fail", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: "http://127.0.0.1:1" } });
-  const rows = await waitAgent("lv-dec-fail");
-  assert.ok(rows.some((r) => r.action === "decide" && r.reason === "decider-fail"),
-    "decider-fail must survive logOptimizes=false");
+    { protocol: "chat", agent: "lv-dec-fail", kind: "", query: "", options: { statsDir: dir, cacheTtlMs: 0, logOptimizes: false, gatewayUrl: "http://127.0.0.1:1" } });
+  const rows = rowsFor("lv-dec-fail");
+  assert.ok(rows.some((r) => r.action === "decide" && r.reason === "decider-fail-rule"),
+    "decider-fail-rule must survive logOptimizes=false");
 });
 
 test("log levels: report codes unaffected by logOptimizes (followup→skipped, optimized→ready)", async () => {
@@ -109,14 +93,14 @@ test("log levels: report codes unaffected by logOptimizes (followup→skipped, o
     // not redefine ctx.report semantics (regression: used to send unavailable)
     let codes = [];
     await onRequest({ tools: [{}], messages: [{ role: "user", content: "追问不应上报 unavailable 语义验证" }] },
-      { protocol: "chat", agent: "lv-rep-code", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: gw.url, dryRun: false }, report: (c) => codes.push(c) });
+      { protocol: "chat", agent: "lv-rep-code", kind: "", query: "", options: { statsDir: dir, cacheTtlMs: 0, logOptimizes: false, gatewayUrl: gw.url, dryRun: false }, report: (c) => codes.push(c) });
     assert.deepEqual(codes, ["skipped"], "suppressed followup reports skipped, not unavailable");
     // suppressed successful optimize still reports "ready"
     const gw2 = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "足够长的成功优化输出文本用于验证 ready 上报不被开关改变语义" });
     try {
       codes = [];
       await onRequest({ tools: [{}], messages: [{ role: "user", content: "成功优化应上报 ready 的语义验证用例" }] },
-        { protocol: "chat", agent: "lv-rep-ready", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: gw2.url, dryRun: false, deciderGroup: "" }, report: (c, b) => codes.push([c, b]) });
+        { protocol: "chat", agent: "lv-rep-ready", kind: "", query: "", options: { statsDir: dir, cacheTtlMs: 0, logOptimizes: false, gatewayUrl: gw2.url, dryRun: false, deciderGroup: "" }, report: (c, b) => codes.push([c, b]) });
       assert.equal(codes.length, 1);
       assert.equal(codes[0][0], "ready");
       assert.ok(codes[0][1] > 0);

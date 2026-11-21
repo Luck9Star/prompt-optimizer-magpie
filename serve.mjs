@@ -1,25 +1,19 @@
 // v0.2 standalone stats daemon (design §6). All HTTP logic lives in
 // lib/stats-service.mjs, shared with index.mjs (magpie plugin host entry).
 // This file adds: env overrides (PORT, POM_DATA_DIR, POM_BIND), service.json
-// discovery for systemd, EADDRINUSE retry+fallback. Retention (prune) lives
-// in startStatsService — but serve.mjs needs the pre-bind candidate loop, so
-// it drives the shared server itself and calls the shared prune helper below.
-import { writeFileSync, rmSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+// discovery for systemd and EADDRINUSE retry+fallback.
+import { writeFileSync, rmSync, readFileSync, symlinkSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { prune } from "./lib/stats.mjs";
 import { makeStatsServer } from "./lib/stats-service.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const DATA_DIR = process.env.POM_DATA_DIR || ROOT;
 const STATS = join(DATA_DIR, "stats"); // daily day-files (lib/stats.mjs)
 const SERVICE = join(DATA_DIR, "service.json");
+const instanceRecord = join(DATA_DIR, `.service-${randomUUID()}.json`);
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
-// 日志保留：默认 7 天；0/负数 = 显式永久保留。非法值（如 "14d"、空串）
-// 是配置手滑，静默归 0 会把清理关掉、磁盘无限涨——回退默认并打日志。
-const RAW_RETAIN = Number(process.env.POM_RETAIN_DAYS ?? 7);
-const RETAIN_DAYS = Number.isFinite(RAW_RETAIN) ? RAW_RETAIN : 7;
-if (!Number.isFinite(RAW_RETAIN)) console.warn(`serve: POM_RETAIN_DAYS="${process.env.POM_RETAIN_DAYS}" is not a number, falling back to ${RETAIN_DAYS}`);
 // POM_BIND: 默认 127.0.0.1；设为 0.0.0.0 / 本机网卡 IP = 开 LAN 访问
 // （stats 日志里有截断后的提示词原文，对内网可见——见 README 隐私说明）。
 const BIND = process.env.POM_BIND || "127.0.0.1";
@@ -39,12 +33,16 @@ const RETRIES_PER_CANDIDATE = 16;
 const RETRY_DELAY_MS = 100;
 const candidates = port === 0 ? [0] : [port, ...FIXED_FALLBACK.filter((p) => p !== port)];
 let retriesLeft = RETRIES_PER_CANDIDATE;
+let discovery;
 // Register the listening handler ONCE: listen(port, host, cb) adds cb as
 // another one-time 'listening' listener per retry attempt, so a bind that
 // succeeds after N retries would fire N callbacks (N service.json writes).
 server.on("listening", () => {
   const { port: bound } = server.address();
-  writeFileSync(SERVICE, JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2));
+  discovery = JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2);
+  writeFileSync(instanceRecord, discovery, { flag: "wx" });
+  symlinkSync(basename(instanceRecord), instanceRecord + ".next");
+  renameSync(instanceRecord + ".next", SERVICE);
   console.log(`serve: http://${BIND}:${bound}  (data: ${DATA_DIR})`);
 });
 const tryListen = () => server.listen(candidates[0], BIND);
@@ -64,21 +62,12 @@ server.on("error", (err) => {
   console.error(`serve: ${err.message}`);
   process.exit(1);
 });
-// prune at startup, then once a day (timer doesn't keep the loop alive —
-// serve's listening socket does). Same policy as startStatsService; serve
-// drives its own because it owns the pre-bind candidate loop above.
-const pruned = RETAIN_DAYS > 0 ? prune(RETAIN_DAYS, Date.now(), STATS) : 0;
-if (pruned > 0) console.log(`serve: pruned ${pruned} day-file(s) older than ${RETAIN_DAYS}d`);
-setInterval(() => {
-  const n = RETAIN_DAYS > 0 ? prune(RETAIN_DAYS, Date.now(), STATS) : 0;
-  if (n > 0) console.log(`serve: pruned ${n} day-file(s) older than ${RETAIN_DAYS}d`);
-}, 86400_000).unref?.();
-
 tryListen();
 
 const shutdown = () => {
   try {
-    rmSync(SERVICE); // best-effort: only ours
+    // Removing only our target keeps a concurrent publication intact.
+    if (discovery && readFileSync(instanceRecord, "utf8") === discovery) rmSync(instanceRecord);
   } catch {}
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1000).unref();

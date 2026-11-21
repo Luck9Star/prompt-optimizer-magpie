@@ -3,7 +3,10 @@ node_modules/
 stats.ndjson
 stats/
 service.json
+.service-*.json
+.service-*.json.next
 .cache.json
+.cache.json.d/
 debug-dump.log
 
 .review-brief.md

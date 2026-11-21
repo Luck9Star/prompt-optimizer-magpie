@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { get, createServer } from "node:http";
@@ -46,7 +46,8 @@ async function startServe(dataDir, port = 0) {
   });
   const serviceJson = join(dataDir, "service.json");
   const t0 = Date.now();
-  while (!existsSync(serviceJson)) {
+  while (true) {
+    if (existsSync(serviceJson) && JSON.parse(readFileSync(serviceJson, "utf8")).pid === child.pid) break;
     if (Date.now() - t0 > 10000) throw new Error("service.json not written within 10s");
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -183,5 +184,31 @@ test("serve: startup prune honors POM_RETAIN_DAYS (7d default behavior)", async 
     child.kill("SIGTERM");
     await new Promise((r) => child.on("exit", r));
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("serve: exiting an older instance preserves the newer record; a restart republishes discovery", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pom-discovery-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const children = [];
+  const start = async () => {
+    const instance = await startServe(dir);
+    children.push(instance.child);
+    return instance;
+  };
+  const stop = async (child) => { child.kill("SIGTERM"); await exited(child); };
+  try {
+    const first = await start();
+    const second = await start();
+    await stop(first.child);
+    assert.equal(JSON.parse(readFileSync(first.serviceJson, "utf8")).pid, second.child.pid);
+    assert.equal(readdirSync(dir).filter((f) => f.startsWith(".service-")).length, 1);
+    await stop(second.child);
+    assert.ok(!existsSync(second.serviceJson));
+    assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith(".service-")), []);
+    const next = await start();
+    assert.equal(JSON.parse(readFileSync(next.serviceJson, "utf8")).pid, next.child.pid);
+  } finally {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) await stop(child);
   }
 });

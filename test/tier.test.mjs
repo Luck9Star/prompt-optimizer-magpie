@@ -3,10 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { onRequest } from "../hooks.mjs";
+import { getTemplate } from "../templates/index.mjs";
 import { mockGateway } from "./helpers.gateway.mjs";
 
 // tmp statsDir via options.statsDir — never touch the real stats/ dir.
@@ -47,8 +48,7 @@ test("tier: decider tpl=planning → optimizer gets the planning template system
     await onRequest(body1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: true }));
     const opt = gw.seen.find((r) => r.path === "/v1/chat/completions");
     assert.ok(opt, "optimizer called");
-    // planning template's system prompt differs from professional's
-    assert.ok(opt.body.messages[0].content.includes("规划"));
+    assert.ok(opt.body.messages[0].content.startsWith(getTemplate("planning").system));
   } finally { gw.close(); }
 });
 
@@ -58,14 +58,12 @@ test("tier: invalid tpl choice falls back to professional", async () => {
     const out = await onRequest(body1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: true }));
     assert.ok(out === undefined); // dry-run always returns undefined; check optimizer used
     const opt = gw.seen.find((r) => r.path === "/v1/chat/completions");
-    assert.ok(opt.body.messages[0].content.length > 200); // professional system prompt
+    assert.ok(opt.body.messages[0].content.startsWith(getTemplate("professional").system));
   } finally { gw.close(); }
 });
 
 test("cache: same prompt twice → second is cache-hit, one optimizer call", async () => {
-  const cf = new URL("../tmp-cache-tier1.json", import.meta.url).pathname;
-  const { rmSync } = await import("node:fs");
-  rmSync(cf, { force: true });
+  const cf = join(dir, "cache-tier1.json");
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9, tpl: { choice: "basic", confidence: 0.9 } }, optimize: LONG });
   try {
     const b1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个缓存策略方案，要支持失效穿透" }] };
@@ -74,13 +72,11 @@ test("cache: same prompt twice → second is cache-hit, one optimizer call", asy
     const opts = gw.seen.filter((r) => r.path === "/v1/chat/completions");
     assert.equal(opts.length, 1);
     assert.equal(findMine("失效穿透").reason, "cache-hit");
-  } finally { gw.close(); rmSync(cf, { force: true }); }
+  } finally { gw.close(); }
 });
 
 test("cache: cacheTtlMs=0 disables the cache", async () => {
-  const cf2 = new URL("../tmp-cache-tier2.json", import.meta.url).pathname;
-  const { rmSync } = await import("node:fs");
-  rmSync(cf2, { force: true });
+  const cf2 = join(dir, "cache-tier2.json");
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: LONG });
   try {
     const b1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个零停机发布流程方案" }] };
@@ -88,7 +84,8 @@ test("cache: cacheTtlMs=0 disables the cache", async () => {
     await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheTtlMs: 0, cacheFile: cf2 }));
     const opts = gw.seen.filter((r) => r.path === "/v1/chat/completions");
     assert.equal(opts.length, 2);
-  } finally { gw.close(); rmSync(cf2, { force: true }); }
+    assert.equal(existsSync(cf2 + ".d"), false);
+  } finally { gw.close(); }
 });
 
 test("bypassAgents: listed agent passes before any gateway call", async () => {
@@ -119,26 +116,22 @@ test("tier: debugDump writes a body dump when enabled", async () => {
   } finally { gw.close(); rmSync(dump, { force: true }); }
 });
 
-// prune-on-load: expired entries are physically removed from the cache file
-// on the next request (file stays bounded), fresh entries survive.
-test("cache: expired entries are pruned from the file on next load", async () => {
-  const cf3 = new URL("../tmp-cache-tier3.json", import.meta.url).pathname;
-  const { rmSync, readFileSync: rf } = await import("node:fs");
-  rmSync(cf3, { force: true });
+test("cache: expired entries are pruned on next load", async (t) => {
+  const cf = join(dir, "cache-tier3.json");
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: LONG });
   try {
-    const b1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个过期清理策略防止文件膨胀" }] };
-    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheFile: cf3 }));
-    // age the entry beyond TTL, then fire another request
-    const m = JSON.parse(rf(cf3, "utf8"));
-    for (const k of Object.keys(m)) m[k].ts = Date.now() - 9e6;
-    const { writeFileSync: wf } = await import("node:fs");
-    wf(cf3, JSON.stringify(m));
+    const opts = ctx(gw.url, { dryRun: false, cacheFile: cf, cacheTtlMs: 60000 });
+    await onRequest(body1, opts);
+    const [first] = readdirSync(cf + ".d");
+    assert.ok(first);
+    const later = Date.now() + 60001;
+    t.mock.method(Date, "now", () => later);
     const b2 = { tools: [{}], messages: [{ role: "user", content: "帮我设计另一个完全不同的冷却策略" }] };
-    await onRequest(b2, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheFile: cf3 }));
-    const after = JSON.parse(rf(cf3, "utf8"));
-    assert.equal(Object.keys(after).length, 1); // only b2's fresh entry remains
-  } finally { gw.close(); rmSync(cf3, { force: true }); }
+    await onRequest(b2, opts);
+    const after = readdirSync(cf + ".d");
+    assert.equal(after.length, 1);
+    assert.notEqual(after[0], first);
+  } finally { gw.close(); }
 });
 
 test("teardown", () => rmSync(dir, { recursive: true, force: true }));

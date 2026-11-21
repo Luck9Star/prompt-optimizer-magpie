@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { onRequest } from "../hooks.mjs";
+import { getTemplate } from "../templates/index.mjs";
 import { mockGateway } from "./helpers.gateway.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "pom-macfix-"));
@@ -29,9 +30,7 @@ test("macfix 高-1: basic tier + English input → English system prompt (profes
     await onRequest(singleUser("please help me fix this vague bug report"), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: true }));
     const opt = gw.seen.find((r) => r.path === "/v1/chat/completions");
     assert.ok(opt, "optimizer called");
-    // professional_en is the ONLY template with an English system prompt
-    assert.ok(opt.body.messages[0].content.includes("User Prompt"), "English system prompt");
-    assert.ok(!opt.body.messages[0].content.includes("用户提示词"), "not the Chinese basic template");
+    assert.ok(opt.body.messages[0].content.startsWith(getTemplate("professional_en").system));
   } finally { gw.close(); }
 });
 
@@ -40,8 +39,7 @@ test("macfix 高-1: planning tier + English input → professional_en too", asyn
   try {
     await onRequest(singleUser("please help me plan this vague migration"), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: true }));
     const opt = gw.seen.find((r) => r.path === "/v1/chat/completions");
-    assert.ok(opt.body.messages[0].content.includes("User Prompt"));
-    assert.ok(!opt.body.messages[0].content.includes("用户提示词"));
+    assert.ok(opt.body.messages[0].content.startsWith(getTemplate("professional_en").system));
   } finally { gw.close(); }
 });
 
@@ -50,7 +48,7 @@ test("macfix 高-1: basic tier + Chinese input stays on the Chinese basic templa
   try {
     await onRequest(singleUser("帮我把这个模糊需求改写成具体可执行的中文提示词描述"), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: true }));
     const opt = gw.seen.find((r) => r.path === "/v1/chat/completions");
-    assert.ok(opt.body.messages[0].content.includes("用户提示词基础优化助手"), "Chinese basic template kept");
+    assert.ok(opt.body.messages[0].content.startsWith(getTemplate("basic").system));
   } finally { gw.close(); }
 });
 

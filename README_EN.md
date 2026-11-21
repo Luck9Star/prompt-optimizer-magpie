@@ -74,6 +74,8 @@ magpie plugin options prompt-optimizer-magpie '{
 | `dryRun` | `true` | run the full chain and log, but **don't rewrite** requests. Dry-run for a few days and watch the daily files under `stats/` before turning it off |
 | `deciderGroup` | `group/route-decider` | decision model group; `""` = rules-only mode (threads pass through, first turns only) |
 | `optimizeGroup` | `group/prompt-optimize` | model group for optimize calls |
+| `cacheTtlMs` | `60000` | Atomically published rewrites in `.cache.json.d/` are keyed by agent, original text, gateway, optimize group, configured and effective modes, tier and dry-run state. A value ≤0 disables cache I/O. The old `.cache.json` stays on disk and is ignored. |
+| `debugDump` | off | Append a redacted copy of candidate requests to a file. Set a path or use `true` for `debug-dump.log` beside the hook. Sensitive fields become `[REDACTED]` before clipping. |
 | `minChars` / `maxChars` | `6` / `12000` | user-text length window. `<minChars` is a sync hard pass; `maxChars` is an absolute ceiling against book-length pastes — in-range long text is left to the decider |
 | `bypassPrefix` | `["!!", "##"]` | user text starting with either prefix is sent verbatim |
 | `bypassModels` | `[]` | requests whose `body.model` matches pass through (machine-task models, e.g. `group/bili-summary`) |
@@ -91,7 +93,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 An optimized result is only substituted after passing the guardrails, otherwise the original passes through:
 
-- strip ``` fences;
+- strip surrounding code fences and verify exact spelling and counts of `[REDACTED]`, double-brace placeholders and backticked identifiers, including on cache hits;
 - lower bound `0.4×` the original length (prevents over-shrinking);
 - upper bound `max(3× original, 1500)` — a short prompt is *supposed* to expand into a long structured prompt (measured: a 17-char request → a 552-char prompt is the desired outcome), so a fixed 3× rule would kill every short input;
 - absolute ceiling `max(6000, original length)` chars against runaway expansion — the ceiling scales with the `maxChars` admission width so long-but-legal inputs aren't optimized then silently discarded.
@@ -100,13 +102,13 @@ Substitution touches only the **uniquely matched** user-text span in the last us
 
 ## Stats & rollout
 
-Every pass through the hook appends one record to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error), `decide` (decider-fail / decider-fail-rule / followup / low-confidence), `optimize` (dry-run / optimized / merged-optimized / no-span).
+The hook appends audit events to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry redacted, clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error), `decide` (decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence), `optimize` (dry-run / optimized / merged-optimized / cache-hit / no-span).
 
-Retention: the shared `startStatsService` (both entry points — the index.mjs in-app service and the serve.mjs daemon) prunes day files older than `POM_RETAIN_DAYS` (default `7`) at startup and every 24h; `0`/negative keeps everything. Installs that only use the in-app page never grow `stats/` unbounded either. The legacy single-file `stats.ndjson` is no longer read — archive it yourself if you want the history.
+Retention: the active listener (embedded service or standalone daemon) prunes day files older than `POM_RETAIN_DAYS` (default `7`) at startup and every 24h; `0`/negative keeps everything. Installs that only use the in-app page never grow `stats/` unbounded either. The legacy single-file `stats.ndjson` is no longer read — archive it yourself if you want the history.
 
-`decider-fail-rule`: when the decision model is unavailable (timeout / network / parse failure) the hook no longer passes the whole request through — it falls back to the rules-only path (first turns still get optimized, threads pass conservatively, same semantics as `deciderGroup=""`), so a flapping decider never disables the plugin entirely.
+If the decider fails, an existing thread passes through. A first turn records `decider-fail-rule` or `decider-fail-merged` according to the path taken. Responses requests with `previous_response_id` pass directly. Each request reports its outcome once. An applied rewrite reports `ready` with the UTF-8 size of the returned body. Dry runs and ordinary passes report `skipped, 0`. A final model failure reports `unavailable, 0`.
 
-**merged-mode reasons**: `merged-optimized` (marker parsed + guardrails passed, rewrite applied); `merged-passthrough` (model judged the input a follow-up / already structured, passed verbatim, never cached); `merged-fail` (response missing a valid first-line marker, or network/HTTP failure — fail-open); `merged-circuit-open` (after 5 consecutive `merged-fail`s the breaker opens for 10 minutes — merged and the fallback entry route to the rules-only path while open; in-memory state, resets on process restart).
+**merged-mode reasons**: `merged-optimized` (marker parsed + guardrails passed, rewrite applied); `merged-passthrough` (model judged the input a follow-up / already structured, passed verbatim, never cached); `merged-fail` (response missing a valid first-line marker, or network/HTTP failure — fail-open); `merged-circuit-open` (after 5 consecutive failures for a gateway and optimize group, the breaker opens for 10 minutes and resets the count on expiry — merged and the fallback entry route to the rules-only path while open; in-memory state, resets on process restart).
 
 Start with `dryRun: true` for a few days: a high `decider-fail` / `decider-fail-rule` rate means the decision service is unstable (on failure the hook falls back to rules-only behavior — threads pass, first turns still get optimized); if follow-ups get misclassified as `new_task` (watch `optimize/dry-run`), tune the decision criteria. Turn `dryRun: false` only once the false-positive rate looks right.
 
@@ -116,11 +118,11 @@ Start with `dryRun: true` for a few days: a high `decider-fail` / `decider-fail-
 node --test     # or npm test
 ```
 
-117 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, LAN bind, merged mode (single call / first-line marker protocol / [passthrough] never cached / successful rewrites cached and replayed / circuit breaker / thread hard gate / decider fallback / default-behavior regression), plus the previous round's review-fix regressions.
+Coverage includes four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, multi-interface Host validation, IPv6 normalization, listener reuse on the configured address, merged mode (single call / first-line marker protocol / [passthrough] never cached / successful rewrites cached and replayed / circuit breaker / thread hard gate / decider fallback / default-behavior regression), plus the previous round's review-fix regressions.
 
 ## Template provenance & syncing
 
-The `.ts` files under `templates/` are byte-for-byte copies of upstream `packages/core/src/services/template/default-templates/user-optimize/`, each with a header comment noting source path and commit hash (develop `62b49a1f`, 2026-11-18). `templates/index.mjs` is generated from those `.ts` files by `tools/gen-templates.mjs` — zero runtime dependencies. To pick up upstream changes, re-copy and regenerate; not syncing is also a valid choice (deliberate pinning).
+The `.ts` files under `templates/` are byte-for-byte copies of upstream `packages/core/src/services/template/default-templates/user-optimize/`, each with a header comment noting source path and commit hash (develop `62b49a1f`, 2026-11-18). Maintain the three Chinese tiers and the English professional text in `templates/overrides.mjs`. Run `node tools/gen-templates.mjs` to generate and verify `templates/index.mjs`. Review the overrides when updating the vendored snapshots.
 
 ## License
 

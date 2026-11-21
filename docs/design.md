@@ -1,6 +1,6 @@
 # 设计文档：prompt-optimizer-magpie
 
-状态：设计定案（2026-11-20 第三版，评审修订：首轮判定→新任务判定、决策失败语义反转、四协议流程统一、长文换挡不弃）。代码未开始，未提交。
+状态：设计定案（2026-11-20 第三版，评审修订：首轮判定→新任务判定、决策失败语义反转、四协议流程统一、长文换挡不弃）。下文保留初版规划，运行路径按 v0.2 更新。
 
 ## 1. 背景与目标
 
@@ -9,7 +9,7 @@
 目标：
 
 1. 一次部署覆盖所有经过 Magpie 网关的客户端（Claude Code、Codex、Gemini CLI、opencode 等），无需逐客户端配置。
-2. 只优化新任务需求；追问、短消息、代码粘贴放行。新任务可能出现在长会话中途（飞书线程），靠决策门禁区分，不再用「首轮」硬判定。
+2. 只优化新任务需求；追问、短消息、适合保留原样的结构化输入放行。新任务可能出现在长会话中途（飞书线程），靠决策门禁区分，不再用「首轮」硬判定。
 3. 可靠性优先：任何插件内部故障都不得阻断用户请求（fail-open）。
 4. 模型选择外置到 Magpie 模型组，插件零模型配置。
 
@@ -27,7 +27,7 @@
 | 典型用途 | 低成本同步改写（历史裁剪、参数覆盖） | 需要外部 I/O 的改写（通知、本插件） |
 | 官方文档 | — | https://usemagpie.ai/docs/plugins 、仓库 `docs/subsystems/gateway-request-hooks.md` |
 
-本插件必须在请求路径上发起「决策」和「优化」两次额外的模型调用，因此只能用 request hook。
+auto 模式可调用决策和优化模型；merged 在一次 completion 内判定和改写。两种模式均通过 request hook 发起请求。
 
 官方限制：hook 若修改 `model`、`stream`、`tools`、`tool_choice` 等受保护字段会被网关回滚，**只有 `messages` 是安全改写目标**——本插件只替换最后一条 user message，天然合规。
 
@@ -38,7 +38,7 @@
 - 一次优化的本质 = `system: 模板文本` + `user: 原始提示词` → 一次 OpenAI 兼容 chat completion → 取返回文本。没有其他魔法。
 - `@prompt-optimizer/core` 是 pnpm workspace 内部包，**未发布到 npm**，无法作为依赖安装；MCP server 只是它的薄壳（MCP SDK → CoreServicesManager → PromptService → LLMService + TemplateManager）。
 - ModelManager、HistoryManager、存储 provider、Arena/Compare/Evaluation 等 Web UI 子系统对网关插件全部无用。
-- 因此采用 **vendoring 模板** 而非复用 core：把 4 个模板文件逐字节拷进 `templates/`，头部注释来源路径 + commit hash（develop `62b49a1f`，2026-11-18）。
+- 因此采用 **vendoring 模板** 而非复用 core：把 4 个模板文件逐字节拷进 `templates/`，头部注释来源路径 + commit hash（develop `62b49a1f`，2026-11-18）。运行文案在 `templates/overrides.mjs` 维护，由 `node tools/gen-templates.mjs` 生成并校验 `templates/index.mjs`。
 
 ## 4. 处理流程（onRequest）
 
@@ -60,49 +60,35 @@ onRequest(body, ctx)
  │     （剔除 <environment_context> 等宿主注入块）；gemini → body.contents
  │     定位不到"用户亲笔"文本 → 放行
  │
- ├─ 2. 硬规则放行（同步零成本，命中记 stats(action=bypass)）：
- │     a. 提取文本 < minChars（6）——短回复/确认/闲聊不进决策，零成本放行
- │     b. 以 skipPrefix（!!）开头
- │     c. 疑似代码/日志粘贴（围栏块占比、超长行、代码标记密度）
- │     （"已高度结构化"降级为模板选择信号；超长不再硬放行，交决策模型）
+ ├─ 2. bypassPrefix、minChars、maxChars 命中时放行。
+ │     Responses 含 previous_response_id 时视为续接，直接放行。
  │
- ├─ 3. 新任务判定（长线程的关键闸门）：
- │     A. deciderGroup 非空（默认）：POST {gateway}/v1/systemone
- │        questions.optimize.choice.criteria：
- │          new_task: "开启新任务的指令性需求，改写可提升执行质量"
- │          followup: "对当前任务的追问/确认/补充/闲聊，改写会破坏语境"
- │        state 带信号：{会话已有 assistant 回复?, 长度, 是否指令式开头}
- │        判 followup → 放行
- │        超时/失败/解析异常/confidence<0.6 → 放行
- │        （fail-safe 反转：宁漏勿误，决策坏了不兜底优化）
- │        长文本信号也进决策：超长提示词常自带结构/上下文，改动弊大于利，
- │        由决策模型判"信息已充分→followup/skip"，不再长度硬放行
- │     B. 纯规则模式（deciderGroup=""）：会话已有 assistant 回复 → 放行。
- │        长线程优化必须开 decider，这是明示取舍，不是缺陷
+ ├─ 3. auto 且有 deciderGroup 时，以用户原文、长度、是否已有助手回复向
+ │     /v1/systemone 询问 noul/tpl；非 new_task 或置信度 <0.6 放行。
+ │     判定服务故障且已有助手回复 → 放行；首轮按 deciderFallback 走规则或 merged。
+ │     显式 merged 和纯规则仅处理首轮；merged 跳过 decider。
  │
- ├─ 4. 模板选择（template=auto 默认）：
- │     CJK≥0.3 → 中文模板；>300 字或多步骤 → planning；
- │     高度结构化 → basic；其余 → professional。显式指定则完全固定
+ ├─ 4. 本地模板按 tpl 选档。skip 放行；缺失或置信度 <0.5 时用 professional。
+ │     非中文路由固定 professional_en；merged 在 completion 内选择档位或放行。
  │
- ├─ 5. 优化：POST {gateway}/v1/chat/completions
- │     { model: optimizerGroup,
- │       messages: [ {role:'system', content: 模板+防风格污染尾注}, {role:'user', content: 原文本} ],
- │       stream: false }
- │     超时 optimizeTimeoutMs（15s）/ 非 200 / 空内容 → 记 stats(action=optimize-fail) 放行
+ ├─ 5. 查策略隔离的磁盘缓存；未命中时 POST /v1/chat/completions。
+ │     merged 要求原始首行是合法控制标记，格式或网络失败则原样放行。
+ │     同一网关与优化组连续失败 5 次后回落纯规则 10 分钟，到期重新计数。
  │
- ├─ 6. 输出净化 + 护栏：剥离 output-strategy（ponytail/ADHD）注入的
- │     "下一步：…""风险：…"式尾巴；空、<0.4×、>max(3×,1500)、超6000 → 弃用放行（风格污染用 TAIL_NOTE 预防）
+ ├─ 6. 去除外围围栏，长度限制为 [0.4×原长, min(max(3×原长,1500),max(6000,原长))]。
+ │     逐个比对 [REDACTED]、双花括号占位符和反引号标识符的拼写与次数；
+ │     缓存重放也走此检查。
  │
  └─ 7. 替换（span 匹配守卫）：提取文本必须在最后一条 user 消息的文本 part
        内找到匹配（先原样、再空白规范化，且唯一）；ctx.query 与消息正文
        可能不同源，禁止拿 ctx.query 整段覆盖消息。只替换该 span，
        多模态 part、图片、tool_result、宿主 wrapper 原样保留；找不到 → 放行。
-       dryRun=true 只记长度和 hash（logText=true 才落原文）；否则 return newBody
+       dryRun=true 时原请求放行，否则 return newBody；审计文本受 logRewrites 控制
 ```
 
 ※ 新任务 ≠ 首轮：飞书/Hermes 是长线程，新任务大量发生在已有 assistant 回复之后。「已有 assistant 回复」从硬放行条件降级为交给决策模型的信号（步骤 3.A）；纯规则模式退回保守跳过（步骤 3.B）。
 
-全链路包一层 try/catch：任何异常记 stats(action=error) 后 `return undefined`。
+全链路包一层 try/catch：任何异常记 stats(action=pass, reason=error) 后 `return undefined`。
 
 ### 4.5 用户真实输入提取（2026-11-20 探针实测验证）
 
@@ -145,15 +131,15 @@ onRequest(body, ctx)
 | 无 tools 的请求多半是机器旁路（gateway-notify：`hasTools` 为假则不开轮次） | 默认 `skipToolless=true`。代价：不带 tools 的纯聊天客户端不会被优化。天哥的 Claude/Codex/Hermes/Grok 都带 tools |
 | 压缩与子代理进度不是用户提示词 | 正文含这些就 bypass：`Your task is to create a detailed summary of the conversation so far`、`This session is being continued from a previous conversation`、`You are performing a CONTEXT CHECKPOINT COMPACTION`、`Describe your most recent action in 3-5 words` |
 | 替换必须保留非文本 part | 见步骤 4。图片、tool_result 不能被字符串覆盖 |
-| 同一条提示词会被 agent 重试 | 进程内缓存 `hash(query)→优化结果`，TTL 60s。命中则直接替换，不再打第二次优化 |
-| 中英模板 | CJK 占比 ≥0.3 用 `professional`，否则 `professional_en`。`template` 显式指定时不自动切 |
-| 优化结果护栏 | 空、短于原文 0.4 倍、长于 max(3×原文,1500)、或超 6000 绝对上限 → 弃用，原文放行。output-strategy 风格污染用 TAIL_NOTE 在 system 预防；v0.1 未做尾标正则检测 |
+| 同一条提示词会被 agent 重试 | 插件目录 `.cache.json.d/` 的逐键磁盘缓存，键取 agent、原文、网关、优化组、配置/实际模式、有效档位和 dryRun 的哈希。TTL 默认 60s；≤0 跳过缓存读写；旧单文件缓存不参与重放 |
+| 中英模板 | CJK 占比 ≥0.3 时允许中文三档，否则固定 `professional_en` |
+| 优化结果护栏 | 空、短于原文 0.4 倍、长于 max(3×原文,1500)、或超过 max(6000,原文长度) 绝对上限 → 弃用，原文放行。output-strategy 风格污染用 TAIL_NOTE 在 system 预防；v0.1 未做尾标正则检测 |
 
 `ctx` 官方列出的字段：`protocol, model, stream, path, agent, session, cwd, query, options, signal`。`origin` / `kind` 是探针里见过、文档这段没写的，继续用，但实现时缺字段就当「未知→放行」。
 
 ### 决策门禁：从"可选增强"升级为"长线程必需"
 
-2026-11-20 评审修订：原设计把「会话已有 assistant 回复」当硬放行，这在 Claude Code 单任务会话成立，在飞书/Hermes 长线程里会把绝大多数新任务放掉——插件等于没装。因此该信号改为交给决策模型；决策失败的语义同步反转：**超时/报错/解析异常/confidence<0.6 一律原文放行**（宁漏勿误），不再「不确定就优化」。
+2026-11-20 评审修订：原设计把「会话已有 assistant 回复」当硬放行，这在 Claude Code 单任务会话成立，在飞书/Hermes 长线程里会把绝大多数新任务放掉——插件等于没装。因此该信号改为交给决策模型；置信度不足时原样放行。v0.2 的超时、报错和不可解析响应按 §4 走降级路径，仅首轮可继续改写。
 
 实测：`group/route-decider` 组列表虽显示六成员 not served，但 `/v1/systemone` 实调成功（bailian-decision 活着，choice+confidence 正常，0.97 置信度）。结论「可用但可能波动」——所以 fail-safe 方向必须指向放行。决策组只能放真正的决策类模型（System One 协议 `{state, questions}`），禁止拿普通 chat 模型冒充。纯规则模式（deciderGroup 留空）保留，但只适合短会话客户端；长线程不开 decider = 全部放行。
 
@@ -162,7 +148,7 @@ onRequest(body, ctx)
 | 事实 | 结果 |
 |---|---|
 | loopback 调 `127.0.0.1:3425/v1/chat/completions` 鉴权 | **无需任何 key** |
-| `/v1/systemone` 请求格式 | `questions.<name>.choice.criteria` 必须是 `{选项: 描述}` dict；用数组或缺嵌套会报 `InvalidParameter` |
+| `/v1/systemone` 请求格式 | `questions.<name>.criteria` 必须是 `{选项: 描述}` dict；用数组或缺嵌套会报 `InvalidParameter` |
 | `group/route-decider` 实调 | 成功，`noul=new_task(0.97)` / `opt=yes(0.97)` |
 | output-strategy 中间件污染 | **确认存在**：优化组请求也被注入 ponytail/ADHD 输出风格 → 步骤 3.5 净化 + 模板尾注双重防御 |
 
@@ -210,7 +196,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 
 ### 发现文件与统计数据路径
 
-- `service.json` 与 `stats.ndjson` 写在插件数据目录；**运行时可写路径以实测为准**（候选：插件安装目录内 `data/`、`~/.cache/magpie/prompt-optimizer/`），v0.1 第一件事是确认 hook（Bun host）与 serve.mjs 都能读写同一路径。hook 每次 append 一行 JSON 事件（append-only，无锁），serve.mjs 只读。
+- hook 按 UTC 日追加 `stats/YYYY-MM-DD.ndjson`。独立服务从 `POM_DATA_DIR`（默认插件目录）读取该布局，在该目录发布 `service.json`。持有监听端口的服务负责清理过期日文件。
 
 ## 7. 监控与统计
 
@@ -218,8 +204,8 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 
 | 层 | 机制 | 阶段 |
 |---|---|---|
-| 事件流水 | hook 写 `stats/YYYY-MM-DD.ndjson`（按 UTC 日分文件）：`{ts, agent, action, reason, durationMs, inputChars, outputChars, dryRun, fromCache?, orig?, rewritten?}`（orig/rewritten 为截断后的原文审计，logRewrites 可关）；action/reason ∈ pass（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、decide（decider-fail / decider-fail-rule / followup / low-confidence）、optimize（dry-run / optimized / merged-optimized / cache-hit / no-span） | v0.1→v0.2 |
-| 结果码 | `ctx.report(code, bytes)` 上报固定结果码（不带用户正文） | v0.1 |
+| 事件流水 | hook 写 `stats/YYYY-MM-DD.ndjson`（按 UTC 日分文件）：`{ts, agent, action, reason, durationMs, inputChars, outputChars, dryRun, fromCache?, orig?, rewritten?}`（orig/rewritten 为脱敏后截断的文本，logRewrites 可关）；action/reason ∈ pass（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、decide（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、optimize（dry-run / optimized / merged-optimized / cache-hit / no-span） | v0.1→v0.2 |
+| 结果码 | 每请求一次终态 `ctx.report(code, bytes)`：回写报 ready 与返回体 UTF-8 字节数，放行/干跑报 skipped，最终模型错误报 unavailable；未写回时 bytes 为 0 | v0.1 |
 | 日志 | 失败细节进 `~/Library/Logs/magpie/app.log`（`plugin [error]` 通道） | v0.1 |
 | token 成本 | 已有 page-usage-tree（优化调用按 `group/prompt-optimize` 入账）+ 内置 Usage 页 | 现成 |
 | 失败通知 | 复用 gateway-notify（保持 `includeText=false`） | 现成 |
@@ -232,14 +218,14 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | `enabled` | true | 总开关 |
 | `optimizerGroup` | group/prompt-optimize | 优化模型组（order 路由） |
 | `deciderGroup` | group/route-decider | 长线程新任务判定必需；留空 = 纯规则模式（长会话将全部放行，只适合短会话客户端） |
-| `template` | auto | auto：CJK≥0.3 选中文模板，>300 字/多步骤切 planning，高度结构化切 basic；显式 professional / professional_en / basic / planning 则完全固定 |
+| `optimizerMode` / `deciderFallback` | auto / rule | merged 在首轮合并判断和改写；deciderFallback 可指定 merged，熔断期间回落规则 |
 | `minChars` | 6 | 短回复硬放行，不进决策。中文 6 字（约 2 词）以下基本无优化空间："改一下""好""继续看"。CJK 单字信息密度高，阈值比英文词数口径小；dryRun 统计 6–10 字段命中率后微调 |
 | `maxChars` | 12000 | 兜底上限（防粘贴整本书），正常范围内超长文本交决策模型判，不硬放行 |
 | `skipPrefix` | !! | 手动绕过前缀 |
-| `dryRun` | false | 影子模式：只记录不替换。默认只记长度和 hash。**首个版本建议先开 dryRun 跑几天**，统计 decider 误判率和优化收益再放行 |
-| `logText` | false | true 才把优化前后原文写入 ndjson。本机单用户可开，默认关 |
+| `dryRun` | true | 影子模式：只记录不替换。**首个版本建议先开 dryRun 跑几天**，统计 decider 误判率和优化收益再放行 |
+| `logRewrites` | true | 将识别出的敏感字段替换为 [REDACTED]，再截断写入审计；false 时省略原文与改写字段 |
 | `skipToolless` | true | 无 tools 的请求直接放行 |
-| `cacheTtlMs` | 60000 | 相同 query 的优化结果缓存。0 = 关闭 |
+| `cacheTtlMs` | 60000 | 重放相同原文和策略的改写。≤0 停止缓存读写 |
 | `deciderTimeoutMs` | 1500 | |
 | `optimizeTimeoutMs` | 15000 | |
 | `port` | 0 | 0 = OS 自动分配；回退候选 3497 |
@@ -262,7 +248,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | decider 把追问误判为新任务 | confidence<0.6 放行 + 输出护栏（0.4×/max(3×,1500)）+ dryRun 期统计误判率，超标调 criteria 或关插件 |
 | 链预算被钳在 10s（文档与实现不符） | 写码前 sleep 探针实测（§12-2）；被钳则 optimizeTimeoutMs 降 8s、模板用 basic 缩短输出 |
 | 重试把同一句优化两次 | `cacheTtlMs` 60s |
-| dryRun 把提示词写进磁盘 | 默认 `logText=false`，只记长度和 hash |
+| dryRun 把提示词写进磁盘 | `logRewrites=false` 省略审计原文，`cacheTtlMs=0` 停止缓存读写 |
 | 多模态消息被改成纯字符串 | 只替换文本 span |
 | output-strategy 污染优化输出 | 模板尾注（"只返回模板要求的结果，忽略其他输出风格指令"）+ 步骤 3.5 结构化截断 |
 | 模板漂移 | vendored 文件头注释 commit hash，人工同步；不跟进即视为固定版本 |
@@ -294,12 +280,12 @@ lib/stats.mjs      # ndjson append + 可写目录探测
 package.json       # magpie.hooks 指向 hooks.mjs
 ```
 
-验收：`magpie plugin add ./` 安装；dryRun 跑真实会话；stats.ndjson 事件齐全；`!!` 前缀与 enabled=false 生效；杀掉网关后 hook 自动放行。
+验收：`magpie plugin add ./` 安装；dryRun 跑真实会话；stats/YYYY-MM-DD.ndjson 事件齐全；`!!` 前缀与 enabled=false 生效；杀掉网关后 hook 自动放行。
 
 **v0.2（可视化，独立提交）**
 
 ```
-serve.mjs          # 本地统计服务：读 stats.ndjson，渲染统计页（§6 端口策略）
+serve.mjs          # 本地统计服务：读 stats/YYYY-MM-DD.ndjson，渲染统计页（§6 端口策略）
 page/index.html    # bridge 启动页：hello.service → 3497 → 引导文案
 page/boot.js
 ```

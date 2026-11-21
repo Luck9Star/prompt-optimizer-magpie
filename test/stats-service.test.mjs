@@ -4,9 +4,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, get } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startStatsService, aggregate } from "../lib/stats-service.mjs";
+import { makeStatsServer, startStatsService, aggregate } from "../lib/stats-service.mjs";
 import { readEvents } from "../lib/stats.mjs";
 
 const once = (port, path) =>
@@ -53,7 +53,8 @@ test("stats-service: busy port with a live stats service → reused, original un
   }
 });
 
-test("stats-service: foreign occupant → retries then throws, never kills the occupant", async () => {
+test("stats-service: foreign occupant → retries then throws, never kills the occupant", async (t) => {
+  const timers = t.mock.method(globalThis, "setInterval");
   const blocker = createServer((req, res) => res.end("i am not stats"));
   await new Promise((r) => blocker.listen(0, "127.0.0.1", r));
   const port = blocker.address().port;
@@ -62,6 +63,7 @@ test("stats-service: foreign occupant → retries then throws, never kills the o
       () => startStatsService({ port, statsDir: "/nonexistent/x.ndjson" }),
       /busy and no stats service answers/,
     );
+    assert.equal(timers.mock.callCount(), 0, "failed binds must not start retention");
     // blocker survived the retry storm
     const res = await once(port, "/");
     assert.equal(res.body, "i am not stats");
@@ -81,4 +83,59 @@ test("stats-service: aggregate + readEvents shared helpers still correct", () =>
   assert.equal(agg.optimizeDuration.p50, 100);
   assert.equal(agg.optimizeDuration.p95, 300);
   assert.deepEqual(readEvents("/nonexistent/none.ndjson"), []);
+});
+
+function request(server, host, url) {
+  const res = {
+    writeHead(status) { this.status = status; },
+    end(body) { this.body = body; },
+  };
+  server.emit("request", { method: "GET", headers: { host }, url }, res);
+  return res;
+}
+
+test("stats-service: invalid URL returns 400 and malformed day-file events are skipped", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pom-events-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const valid = { ts: 1, action: "pass", reason: "short-text" };
+  const rows = [null, {}, [valid], { ...valid, inputChars: "12" }, { ...valid, reason: {} }, valid];
+  writeFileSync(join(dir, "2026-01-01.ndjson"), rows.map((e) => JSON.stringify(e)).join("\n"));
+  const server = makeStatsServer({ statsDir: dir });
+  assert.equal(request(server, "localhost", "http://").status, 400);
+  assert.deepEqual(JSON.parse(request(server, "localhost", "/api/recent").body), [valid]);
+  assert.equal(JSON.parse(request(server, "localhost", "/api/stats").body).total, 1);
+});
+
+test("stats-service: Host authority supports multiple LAN interfaces and equivalent IPv6 literals", (t) => {
+  t.mock.method(os, "networkInterfaces", () => ({
+    en0: [{ address: "192.0.2.1" }],
+    en1: [{ address: "2001:db8::a" }],
+  }));
+  const lan = makeStatsServer({ bind: "0.0.0.0" });
+  for (const host of ["192.0.2.1:8000", "[2001:0DB8:0:0:0:0:0:A]:123", "LOCALHOST"]) {
+    assert.equal(request(lan, host, "/missing").status, 404, host);
+  }
+  for (const host of ["[::1]:bad", "[::1]x", "localhost:65536", "localhost/path", "192.0.2.2"]) {
+    assert.equal(request(lan, host, "/missing").status, 403, host);
+  }
+  const local = makeStatsServer({ bind: "0:0:0:0:0:0:0:1" });
+  assert.equal(request(local, "192.0.2.1", "/missing").status, 403);
+});
+
+test("stats-service: IPv6 bind is probed on the same address; only the listener owns a timer", async (t) => {
+  const add = t.mock.method(globalThis, "setInterval");
+  const clear = t.mock.method(globalThis, "clearInterval");
+  const dir = mkdtempSync(join(tmpdir(), "pom-bind6-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const first = await startStatsService({ port: 0, bind: "::1", statsDir: dir, retainDays: 7 });
+  try {
+    const second = await startStatsService({ port: first.port, bind: "::1", statsDir: dir, retainDays: 7 });
+    assert.ok(second.reused);
+    await second.close();
+    assert.equal(add.mock.callCount(), 1);
+    assert.equal(clear.mock.callCount(), 0);
+  } finally {
+    await first.close();
+  }
+  assert.deepEqual(clear.mock.calls.map((c) => c.arguments[0]), [add.mock.calls[0].result]);
 });
