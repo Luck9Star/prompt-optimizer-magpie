@@ -55,7 +55,9 @@ magpie plugin options prompt-optimizer-magpie '{
   "optimizeGroup": "group/prompt-optimize",
   "minChars": 6,
   "maxChars": 12000,
-  "bypassPrefix": "!!",
+  "bypassPrefix": ["!!", "##"],
+  "logRewrites": true,
+  "logRewriteChars": 600,
   "bypassModels": [],
   "allowedOrigins": [],
   "skipToolless": true,
@@ -73,7 +75,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `deciderGroup` | `group/route-decider` | 决策模型组；留空 `""` = 纯规则模式（长线程全放行，只优化首轮） |
 | `optimizeGroup` | `group/prompt-optimize` | 优化调用的模型组 |
 | `minChars` / `maxChars` | `6` / `12000` | 用户原文长度窗口。`<minChars` 同步硬放行；`maxChars` 是防整本书粘贴的绝对上限，正常范围内的长文本交决策模型判断 |
-| `bypassPrefix` | `"!!"` | 用户原文以此前缀开头则原样发送 |
+| `bypassPrefix` | `["!!", "##"]` | 用户原文以任一前缀开头则原样发送。**注意**：omp/pi 等 TUI 会把 `!!` 当 shell 转义吃掉，根本到不了网关，实际请用 `##`；支持字符串或数组 |
 | `bypassModels` | `[]` | 命中这些 `body.model` 直接放行（排除机器任务模型，如 `group/bili-summary`） |
 | `allowedOrigins` | `[]` | 非空时仅放行白名单内的 `ctx.origin`；origin 缺字段时 fail-open（不拦截） |
 | `skipToolless` | `true` | 无 tools 的请求直接放行（多为机器/闲聊调用） |
@@ -81,6 +83,8 @@ magpie plugin options prompt-optimizer-magpie '{
 | `optimizeTimeoutMs` | `15000` | 优化调用超时 |
 | `gatewayTimeoutMs` | `25000` | **必须显式设置**的单 hook 预算，见上 |
 | `gatewayUrl` | `http://127.0.0.1:3425` | 网关自环地址（决策 + 优化都回调网关） |
+| `logRewrites` | `true` | 审计日志是否记录改写原文（`orig`/`rewritten` 字段）；`false` 关闭，只记长度 |
+| `logRewriteChars` | `600` | 审计原文每字段截断长度，超出记 `…(+N chars)` |
 
 ## 输出护栏
 
@@ -95,7 +99,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 ## 统计与灰度
 
-每次经过钩子都会向插件目录下的 `stats.ndjson` 追加一条记录（append-only，写失败静默，不记原文全文，只记长度）。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
+每次经过钩子都会向插件目录下的 `stats.ndjson` 追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
 
 建议先 `dryRun: true` 跑几天：若 `decider-fail` 偏多说明决策服务不稳；若追问被误判为 `new_task` 偏多（看 `optimize/dry-run`），需调整决策 criteria。确认无误判后再 `dryRun: false`。
 
