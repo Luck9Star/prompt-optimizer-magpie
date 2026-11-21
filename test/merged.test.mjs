@@ -92,7 +92,26 @@ test("merged 8 (regression): default options → auto behavior unchanged", async
   } finally { gw.close(); }
 });
 
-// 熔断用例放最后：前面 merged 3 已贡献 1 次 merged-fail。
+test("merged 9: successful rewrite is cached — same prompt replays without a second model call", async () => {
+  // 排序敏感：熔断是模块级内存态，merged 6 打开后 10 分钟内 merged 分支
+  // 不可达，故本用例必须在其之前运行（node:test 同文件按声明顺序串行）。
+  // 验证：首调写入 diskCache，同 prompt 重放不再发起模型调用。
+  const gw = await mockGateway({ optimize: `[tpl:professional]\n${REWRITE}` });
+  try {
+    const cacheFile = join(dir, "cache-m9.json");
+    const c = (u) => ctx(u, { cacheFile });
+    const out1 = await onRequest(singleUser("缓存验证用的唯一模糊输入甲" + "字".repeat(8)), { ...c(gw.url), options: { ...c(gw.url).options, optimizerMode: "merged", deciderGroup: "", dryRun: false } });
+    assert.ok(out1, "first call rewrites");
+    assert.equal(gw.seen.length, 1, "one model call so far");
+    const out2 = await onRequest(singleUser("缓存验证用的唯一模糊输入甲" + "字".repeat(8)), { ...c(gw.url), options: { ...c(gw.url).options, optimizerMode: "merged", deciderGroup: "", dryRun: false } });
+    assert.ok(out2, "second call rewrites from cache");
+    assert.equal(gw.seen.length, 1, "replay served from cache — no second model call");
+    const ev = readEvents().filter((e) => e.reason === "cache-hit").pop();
+    assert.ok(ev, "cache-hit event recorded");
+  } finally { gw.close(); }
+});
+
+// 熔断用例放本文件最后：前序用例可能贡献 merged-fail 计数，用例内自带 warm-reset。
 test("merged 6: five consecutive merged-fail → circuit opens, request falls to rules, reason=merged-circuit-open", async () => {
   const gw = await mockGateway({ optimize: "垃圾输出没有标记内容一" });
   const gwOk = await mockGateway({ optimize: `[tpl:professional]\n${REWRITE}` });
@@ -127,5 +146,6 @@ test("merged 7: [tpl:basic] marker never leaks into the rewritten user message",
   assert.equal(nb.messages[0].content, out);
   assert.ok(!nb.messages[0].content.includes("[tpl:"), "no marker leak");
 });
+
 
 test("teardown", () => rmSync(dir, { recursive: true, force: true }));

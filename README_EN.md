@@ -116,7 +116,7 @@ Start with `dryRun: true` for a few days: a high `decider-fail` / `decider-fail-
 node --test     # or npm test
 ```
 
-116 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, LAN bind, merged mode (single call / first-line marker protocol / [passthrough] never cached / circuit breaker / thread hard gate / decider fallback / default-behavior regression), plus the previous round's review-fix regressions.
+117 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, LAN bind, merged mode (single call / first-line marker protocol / [passthrough] never cached / successful rewrites cached and replayed / circuit breaker / thread hard gate / decider fallback / default-behavior regression), plus the previous round's review-fix regressions.
 
 ## Template provenance & syncing
 

@@ -130,7 +130,7 @@ magpie plugin options prompt-optimizer-magpie '{
 node --test     # 或 npm test
 ```
 
-116 个用例：四协议 turn 判定、门禁、span 唯一匹配、fail-open（决策 500 / 决策超时 / 优化超时 / 死网关 / 垃圾 JSON）、统计、模板档位与语言选择、LAN bind、merged 模式（单次调用 / 首行标记协议 / [passthrough] 不缓存 / 熔断 / 线程硬门 / decider 降级 / 缺省回归），以及上一轮评审修复的回归（决策失败回落纯规则、输出上限随原文长度、决策器收原文、纯规则长线程放行、output-guard 短输入展开）。
+117 个用例：四协议 turn 判定、门禁、span 唯一匹配、fail-open（决策 500 / 决策超时 / 优化超时 / 死网关 / 垃圾 JSON）、统计、模板档位与语言选择、LAN bind、merged 模式（单次调用 / 首行标记协议 / [passthrough] 不缓存 / 成功改写入缓存重放 / 熔断 / 线程硬门 / decider 降级 / 缺省回归），以及上一轮评审修复的回归（决策失败回落纯规则、输出上限随原文长度、决策器收原文、纯规则长线程放行、output-guard 短输入展开）。
 
 ## 模板来源与同步
 

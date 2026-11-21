@@ -170,13 +170,16 @@ export async function onRequest(body, ctx) {
 
     // merged 模式：单次调用完成「判定 + 模板选择 + 改写」。hasAssistantReply
     // 仍是代码级硬门——线程一律放行，不交给模型判断（brief §实现约束）。
+    // useMerged 只置标志，真正调用统一放在缓存命中检查之后：成功改写与经典
+    // 路径共用同一 diskCache，同 prompt 在 cacheTtlMs 内重放不再白烧调用。
+    let useMerged = false;
     if (o.optimizerMode === "merged") {
       if (hasAssistantReply(body, protocol)) return pass("no-decider-followup", { in: orig.length });
       if (mergedBreakerOpen()) {
         // 熔断打开：本次不再发起 merged，记事件后走纯规则（首轮 professional）
         log("pass", "merged-circuit-open", { in: orig.length });
       } else {
-        return runMerged(body, o, protocol, lu, orig, log);
+        useMerged = true;
       }
     }
 
@@ -193,7 +196,11 @@ export async function onRequest(body, ctx) {
         // deciderFallback="merged" → 本次请求转 merged 单次调用（判定+改写
         //   一次完成；熔断开启时退纯规则）。其余（默认 "rule"）→ 纯规则
         // 路径：首轮照常 optimize，长线程保守放行，与 deciderGroup="" 语义
-        // 一致。reason 记 decider-fail-rule 与硬放行区分。
+        //   一致。reason 记 decider-fail-rule 与硬放行区分。
+        // 此处直调 runMerged 而非绕缓存统一入口：decider 已失败一次，
+        // 本次请求的合并调用结果仍会写入 diskCache（runMerged 收到
+        // ckHash/diskCache 时才写；这里传 null 即不写，下次请求若 decider
+        // 恢复正常则回到经典路径，缓存由经典入口自然填充）。
         log("decide", "decider-fail-rule", { in: orig.length, origText: orig });
         if (o.deciderFallback === "merged") {
           if (mergedBreakerOpen()) log("pass", "merged-circuit-open", { in: orig.length });
@@ -240,6 +247,7 @@ export async function onRequest(body, ctx) {
       out = hit.out;
       fromCache = true;
     } else {
+      if (useMerged) return runMerged(body, o, protocol, lu, orig, log, ckHash, diskCache);
       try {
         out = await optimize(o, orig, tplChoice);
       } catch {
@@ -431,8 +439,9 @@ async function mergedOptimize(o, orig) {
 }
 
 // merged 主路径：结果分流 + 复用既有 stripFence / output guard / replaceSpan。
-// log 是外层 onRequest 的闭包日志器，reason 码走全局 isFailure 表。
-async function runMerged(body, o, protocol, lu, orig, log) {
+// log 是外层 onRequest 的闭包日志器；ckHash/diskCache 让成功改写写入与经典
+// 路径同一缓存（同 prompt 重放在 cacheTtlMs 内直接命中）。
+async function runMerged(body, o, protocol, lu, orig, log, ckHash, diskCache) {
   let m;
   try {
     m = await mergedOptimize(o, orig);
@@ -460,6 +469,11 @@ async function runMerged(body, o, protocol, lu, orig, log) {
   if (out.length < orig.length * 0.4 || out.length > maxOut) {
     log("pass", "output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
     return undefined;
+  }
+  // 与经典路径同规则：只有成功且过护栏的改写才入缓存
+  if (ckHash && diskCache) {
+    diskCache[ckHash] = { ts: Date.now(), out };
+    saveCache(o.cacheFile || CACHE_FILE, diskCache);
   }
   const newBody = replaceSpan(body, protocol, lu.index, orig, out);
   if (!newBody) {
