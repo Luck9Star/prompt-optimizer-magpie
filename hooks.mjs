@@ -19,7 +19,8 @@ const DEFAULTS = {
   cacheTtlMs: 60000,
   deciderTimeoutMs: 1500,
   optimizeTimeoutMs: 15000,
-  gatewayTimeoutMs: 25000,
+  // gatewayTimeoutMs 有意不在 DEFAULTS：它是网关读取的声明（package.json
+  // options / design §5），hook 代码自身从不消费——留在这里只会误导维护者。
   gatewayUrl: "http://127.0.0.1:3425",
   // 日志分级：logSkips=false 不记常规 pass 事件（not-turn/self-loop 等噪音），
   // 但失败类 reason 始终记录——排障时不能瞎。logOptimizes=false 不记 optimize/decide。
@@ -36,12 +37,14 @@ const DEFAULTS = {
 // small JSON read per request; entries expire by TTL on read.
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-const CACHE_FILE = new URL("./.cache.json", import.meta.url).pathname;
+import { fileURLToPath } from "node:url";
+const CACHE_FILE = fileURLToPath(new URL("./.cache.json", import.meta.url));
 const loadCache = (f) => {
   try { return JSON.parse(readFileSync(f, "utf8")); } catch { return {}; }
 };
 // design §4.6: prune entries older than ttl on load, so .cache.json stops
-// growing without bound. Cap iterations to keep the prune cheap.
+// growing without bound. One pass over all keys — the file stays small (hashed
+// keys, expired entries dropped on each persist), so the full scan is cheap.
 const pruneCache = (m, ttlMs, now = Date.now()) => {
   let removed = 0;
   for (const k of Object.keys(m)) {
@@ -76,7 +79,9 @@ export async function onRequest(body, ctx) {
     const x = extra || {};
     // 分级记录：pass 默认全记；logSkips=false 时只保留失败类 pass（error 及
     // *-fail），optimize/decide 由 logOptimizes 控制。ctx.report 不受影响。
-    const isFailure = ["decider-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
+    // decider-fail-rule 与 decider-fail 同为失败类：不受 logSkips/logOptimizes
+    // 抑制（排障线索），report 映射 unavailable（decider 故障发生这一事实）。
+    const isFailure = ["decider-fail", "decider-fail-rule", "optimize-fail", "optimize-empty", "error"].includes(reason);
     // report 结果码统一映射：日志开关只影响 record，不得改变 ctx.report 语义。
     const codeFor = () => (action === "optimize" && (reason === "optimized" || reason === "cache-hit")) ? "ready"
       : isFailure ? "unavailable" : "skipped";
@@ -90,7 +95,7 @@ export async function onRequest(body, ctx) {
     if ((action === "optimize" || action === "decide") && o.logOptimizes === false && !isFailure) {
       if (typeof (ctx && ctx.report) === "function") {
         const code = codeFor();
-        try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
+        try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(x.outBody ?? body ?? {})) : 0); } catch { /* report must not break the request */ }
       }
       return;
     }
@@ -105,13 +110,13 @@ export async function onRequest(body, ctx) {
       ...(x.markCache !== undefined ? { fromCache: !!x.markCache } : {}),
       ...(x.origText !== undefined && clip(x.origText) !== undefined ? { orig: clip(x.origText) } : {}),
       ...(x.newText !== undefined && clip(x.newText) !== undefined ? { rewritten: clip(x.newText) } : {}),
-    });
+    }, o.statsDir);
     // design §7: ctx.report fixed result codes — ready (rewrite applied) /
     // unavailable (hook failed, fail-open passthrough) / skipped (gate pass).
     // Every exit path logs exactly once, so this reports exactly once too.
     if (typeof (ctx && ctx.report) === "function") {
       const code = codeFor();
-      try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
+      try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(x.outBody ?? body ?? {})) : 0); } catch { /* report must not break the request */ }
     }
   };
   const pass = (reason, extra) => {
@@ -166,21 +171,24 @@ export async function onRequest(body, ctx) {
         d = undefined; // timeout / network / parse — 宁漏勿误
       }
       if (!d) {
-        log("decide", "decider-fail", { in: orig.length, origText: orig });
-        return undefined;
-      }
-      if (d.choice !== "new_task") {
+        // decider 不可用（超时/网络/解析失败）→ 回落纯规则路径：首轮照常优化，
+        // 长线程保守放行，与 deciderGroup="" 的语义一致（decider 抖动期间插件
+        // 不整体失效）。reason 记 decider-fail-rule 与硬放行区分。
+        log("decide", "decider-fail-rule", { in: orig.length, origText: orig });
+        if (hasAssistantReply(body, protocol)) return pass("no-decider-followup", { in: orig.length });
+      } else if (d.choice !== "new_task") {
         log("decide", d.choice === "followup" ? "followup" : `choice:${d.choice}`, { in: orig.length, origText: orig });
         return undefined;
       }
-      if (typeof d.confidence !== "number" || d.confidence < 0.6) {
+      if (d && (typeof d.confidence !== "number" || d.confidence < 0.6)) {
         log("decide", "low-confidence", { in: orig.length, origText: orig });
         return undefined;
       }
       // decider 同时给出模板档位（tpl question）：skip = 不优化的第三态
       // （新任务但已结构化，改写无收益）。tpl 无效、缺失或置信度 <0.5 时
       // 回退 professional（与上游默认一致），decider 部分故障不阻断优化链路。
-      const tplAns = d.tpl;
+      // decider 整体失败（d=undefined）时 tplChoice 保持 undefined → professional。
+      const tplAns = d ? d.tpl : undefined;
       tplChoice = tplAns && ["skip", "basic", "professional", "planning"].includes(tplAns.choice) && typeof tplAns.confidence === "number" && tplAns.confidence >= 0.5
         ? tplAns.choice
         : undefined;
@@ -217,9 +225,10 @@ export async function onRequest(body, ctx) {
       out = stripFence(out);
       // 上限取 max(3×原文, 1500)：短需求本就该展开成长结构化提示词（实测 17 字
       // 需求 → 552 字提示词是期望效果），固定 3× 会误杀所有短输入；长输入仍受
-      // 3× 约束，6000 绝对上限兜底防异常膨胀。
-      const maxOut = Math.max(orig.length * 3, 1500);
-      if (out.length < orig.length * 0.4 || out.length > maxOut || out.length > 6000)
+      // 3× 约束。绝对上限与放行宽度联动（max(6000, 原文长度)）：否则 orig
+      // 超过 2000 的合法输入每次都白烧一次优化调用后必被固定 6000 丢弃。
+      const maxOut = Math.min(Math.max(orig.length * 3, 1500), Math.max(6000, orig.length));
+      if (out.length < orig.length * 0.4 || out.length > maxOut)
         return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
       // only successful, guard-passing rewrites are cached
       diskCache[ckHash] = { ts: Date.now(), out };
@@ -230,7 +239,7 @@ export async function onRequest(body, ctx) {
       log("optimize", "no-span", { in: orig.length, out: out.length, origText: orig, newText: out });
       return undefined;
     }
-    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, markCache: fromCache, origText: orig, newText: out });
+    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, markCache: fromCache, origText: orig, newText: out, ...(newBody ? { outBody: newBody } : {}) });
     return o.dryRun ? undefined : newBody;
   } catch {
     return pass("error");
@@ -286,13 +295,12 @@ function hasAssistantReply(body, protocol) {
 
 async function optimize(o, orig, tplChoice) {
   // Template selection: decider tier (basic/professional/planning) wins when
-  // valid; otherwise fall back to the language heuristic. English gets the
-  // professional_en variant of whatever tier was chosen.
+  // valid; otherwise fall back to the language heuristic. Only professional
+  // has an _en variant — non-Chinese input on other tiers falls to
+  // professional_en rather than rewriting English text with a Chinese prompt.
   const tier = ["basic", "professional", "planning"].includes(tplChoice) ? tplChoice : "professional";
   const langSuffix = cjkRatio(orig) >= 0.3 ? "" : "_en";
-  const tpl = tier === "professional" || langSuffix
-    ? getTemplate(`${tier}${tier === "professional" ? langSuffix : ""}`) || getTemplate("professional" + langSuffix) || getTemplate(tier)
-    : getTemplate(tier);
+  const tpl = getTemplate(tier + langSuffix) || getTemplate("professional" + langSuffix) || getTemplate(tier);
   if (!tpl) return undefined;
   const user = MUSTACHE.test(tpl.user) ? tpl.user.replace(MUSTACHE, () => JSON.stringify(orig)) : `${tpl.user}\n\n${orig}`;
   const res = await fetch(`${o.gatewayUrl}/v1/chat/completions`, {

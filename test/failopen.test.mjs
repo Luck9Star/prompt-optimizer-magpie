@@ -6,11 +6,11 @@ import { mockGateway } from "./helpers.gateway.mjs";
 const body = () => ({ tools: [{}], messages: [{ role: "user", content: "帮我把这个模糊的需求优化成具体的提示词描述" }] });
 const ctx = (url, opts) => ({ protocol: "chat", agent: "t", kind: "", query: "", options: { gatewayUrl: url, ...opts } });
 
-test("fail-open: decider 500 → pass", async () => {
+test("fail-open: decider 500 → rules fallback still optimizes, optimizer failure still passes", async () => {
   const gw = await mockGateway({ deciderStatus: 500 });
   try {
     assert.equal(await onRequest(body(), ctx(gw.url, { deciderGroup: "group/route-decider" })), undefined);
-    assert.equal(gw.seen.length, 1); // decider called, optimizer never reached
+    assert.equal(gw.seen.length, 2); // decider failed → rules fallback ran the optimizer; it failed too → pass
   } finally { gw.close(); }
 });
 

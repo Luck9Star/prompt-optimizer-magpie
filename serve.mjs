@@ -1,7 +1,9 @@
 // v0.2 standalone stats daemon (design §6). All HTTP logic lives in
 // lib/stats-service.mjs, shared with index.mjs (magpie plugin host entry).
-// This file adds: env overrides (PORT, POM_DATA_DIR), service.json discovery
-// for systemd, EADDRINUSE retry+fallback, and the startup/daily prune.
+// This file adds: env overrides (PORT, POM_DATA_DIR, POM_BIND), service.json
+// discovery for systemd, EADDRINUSE retry+fallback. Retention (prune) lives
+// in startStatsService — but serve.mjs needs the pre-bind candidate loop, so
+// it drives the shared server itself and calls the shared prune helper below.
 import { writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,13 +20,16 @@ const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).ver
 const RAW_RETAIN = Number(process.env.POM_RETAIN_DAYS ?? 7);
 const RETAIN_DAYS = Number.isFinite(RAW_RETAIN) ? RAW_RETAIN : 7;
 if (!Number.isFinite(RAW_RETAIN)) console.warn(`serve: POM_RETAIN_DAYS="${process.env.POM_RETAIN_DAYS}" is not a number, falling back to ${RETAIN_DAYS}`);
+// POM_BIND: 默认 127.0.0.1；设为 0.0.0.0 / 本机网卡 IP = 开 LAN 访问
+// （stats 日志里有截断后的提示词原文，对内网可见——见 README 隐私说明）。
+const BIND = process.env.POM_BIND || "127.0.0.1";
 
-const server = makeStatsServer({ statsDir: STATS });
+const server = makeStatsServer({ statsDir: STATS, bind: BIND });
 // design §6: ephemeral (PORT=0) is the norm; a fixed PORT may hit EADDRINUSE —
 // per candidate: same-port retry 16×100ms (a leaving process's socket often
 // clears), then move to the next candidate (fixed fallback 3497 for the page's
-// hello.service-down path). Retry budget is shared across candidates so
-// systemd restarts never die on a lingering socket.
+// hello.service-down path). Each candidate gets its own 16-retry budget so a
+// fallback port also survives a lingering socket (systemd restarts included).
 const port = Number(process.env.PORT ?? 0);
 // hello.service-down fallback (design §6.2b). Overridable so tests can pick
 // a free port — hardcoding 3497 made the suite hang wherever magpie's own
@@ -40,17 +45,18 @@ let retriesLeft = RETRIES_PER_CANDIDATE;
 server.on("listening", () => {
   const { port: bound } = server.address();
   writeFileSync(SERVICE, JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2));
-  console.log(`serve: http://127.0.0.1:${bound}  (data: ${DATA_DIR})`);
+  console.log(`serve: http://${BIND}:${bound}  (data: ${DATA_DIR})`);
 });
-const tryListen = () => server.listen(candidates[0], "127.0.0.1");
+const tryListen = () => server.listen(candidates[0], BIND);
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE" && retriesLeft > 0 && candidates.length > 0) {
     retriesLeft -= 1;
-    if (retriesLeft % RETRIES_PER_CANDIDATE === 0 && candidates.length > 1) {
+    if (retriesLeft === 0 && candidates.length > 1) {
       console.error(`serve: ${err.message}, port ${candidates[0]} busy, trying ${candidates[1]}...`);
-      candidates.shift(); // budget exhausted for this port → next candidate
+      candidates.shift(); // budget exhausted for this port → next candidate …
+      retriesLeft = RETRIES_PER_CANDIDATE; // … with a FRESH budget
     } else {
-      console.error(`serve: ${err.message}, retrying (${Math.min(RETRIES_PER_CANDIDATE, retriesLeft)} left)...`);
+      console.error(`serve: ${err.message}, retrying (${retriesLeft} left)...`);
     }
     setTimeout(tryListen, RETRY_DELAY_MS);
     return;
@@ -59,12 +65,13 @@ server.on("error", (err) => {
   process.exit(1);
 });
 // prune at startup, then once a day (timer doesn't keep the loop alive —
-// serve's listening socket does). Result logged once for ops visibility.
-const pruned = prune(RETAIN_DAYS, Date.now(), STATS);
-if (pruned > 0) console.log(`serve: pruned ${pruned} stats events older than ${RETAIN_DAYS}d`);
+// serve's listening socket does). Same policy as startStatsService; serve
+// drives its own because it owns the pre-bind candidate loop above.
+const pruned = RETAIN_DAYS > 0 ? prune(RETAIN_DAYS, Date.now(), STATS) : 0;
+if (pruned > 0) console.log(`serve: pruned ${pruned} day-file(s) older than ${RETAIN_DAYS}d`);
 setInterval(() => {
-  const n = prune(RETAIN_DAYS, Date.now(), STATS);
-  if (n > 0) console.log(`serve: pruned ${n} stats events older than ${RETAIN_DAYS}d`);
+  const n = RETAIN_DAYS > 0 ? prune(RETAIN_DAYS, Date.now(), STATS) : 0;
+  if (n > 0) console.log(`serve: pruned ${n} day-file(s) older than ${RETAIN_DAYS}d`);
 }, 86400_000).unref?.();
 
 tryListen();

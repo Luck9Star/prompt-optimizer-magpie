@@ -55,25 +55,27 @@ magpie plugin options prompt-optimizer-magpie '{
   "optimizeGroup": "group/prompt-optimize",
   "minChars": 6,
   "maxChars": 12000,
-  "bypassPrefix": "!!",
+  "bypassPrefix": ["!!", "##"],
   "bypassModels": [],
   "allowedOrigins": [],
   "skipToolless": true,
   "deciderTimeoutMs": 1500,
   "optimizeTimeoutMs": 15000,
   "gatewayTimeoutMs": 25000,
-  "gatewayUrl": "http://127.0.0.1:3425"
+  "gatewayUrl": "http://127.0.0.1:3425",
+  "port": 0,
+  "bind": "127.0.0.1"
 }'
 ```
 
 | Option | Default | Description |
 |---|---|---|
 | `enabled` | `true` | master switch |
-| `dryRun` | `true` | run the full chain and log, but **don't rewrite** requests. Dry-run for a few days and watch `stats.ndjson` before turning it off |
+| `dryRun` | `true` | run the full chain and log, but **don't rewrite** requests. Dry-run for a few days and watch the daily files under `stats/` before turning it off |
 | `deciderGroup` | `group/route-decider` | decision model group; `""` = rules-only mode (threads pass through, first turns only) |
 | `optimizeGroup` | `group/prompt-optimize` | model group for optimize calls |
 | `minChars` / `maxChars` | `6` / `12000` | user-text length window. `<minChars` is a sync hard pass; `maxChars` is an absolute ceiling against book-length pastes — in-range long text is left to the decider |
-| `bypassPrefix` | `"!!"` | user text starting with this prefix is sent verbatim |
+| `bypassPrefix` | `["!!", "##"]` | user text starting with either prefix is sent verbatim |
 | `bypassModels` | `[]` | requests whose `body.model` matches pass through (machine-task models, e.g. `group/bili-summary`) |
 | `allowedOrigins` | `[]` | when non-empty, only these `ctx.origin` values pass; a missing origin is fail-open (not blocked) |
 | `skipToolless` | `true` | requests without tools pass through (mostly machine/chit-chat calls) |
@@ -81,6 +83,8 @@ magpie plugin options prompt-optimizer-magpie '{
 | `optimizeTimeoutMs` | `15000` | optimizer call timeout |
 | `gatewayTimeoutMs` | `25000` | **must be set explicitly** — per-hook budget, see above |
 | `gatewayUrl` | `http://127.0.0.1:3425` | gateway loopback address (decide + optimize both call back into the gateway) |
+| `logRewrites` / `logRewriteChars` | `true` / `600` | audit log carries clipped prompt text (`orig`/`rewritten`); `false` logs lengths only |
+| `port` / `bind` | `0` / `127.0.0.1` | stats service listener: `port=0` = OS-assigned; `bind` defaults to loopback only. **Enabling LAN access (e.g. `0.0.0.0`) makes the clipped prompt text in the stats log (`orig`/`rewritten`) visible to your LAN** — only on trusted networks. serve.mjs also honors the `POM_BIND` env override |
 
 ## Output guardrails
 
@@ -89,15 +93,19 @@ An optimized result is only substituted after passing the guardrails, otherwise 
 - strip ``` fences;
 - lower bound `0.4×` the original length (prevents over-shrinking);
 - upper bound `max(3× original, 1500)` — a short prompt is *supposed* to expand into a long structured prompt (measured: a 17-char request → a 552-char prompt is the desired outcome), so a fixed 3× rule would kill every short input;
-- absolute ceiling `6000` chars against runaway expansion.
+- absolute ceiling `max(6000, original length)` chars against runaway expansion — the ceiling scales with the `maxChars` admission width so long-but-legal inputs aren't optimized then silently discarded.
 
 Substitution touches only the **uniquely matched** user-text span in the last user message: verbatim match first, then whitespace-normalized; zero or multiple hits → pass through. `ctx.query` is never used to overwrite the whole message.
 
 ## Stats & rollout
 
-Every pass through the hook appends one record to `stats.ndjson` in the plugin directory (append-only, write failures are silent, only lengths are logged — never full prompt text). `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error), `decide` (decider-fail / followup / low-confidence), `optimize` (dry-run / optimized / no-span).
+Every pass through the hook appends one record to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error), `decide` (decider-fail / decider-fail-rule / followup / low-confidence), `optimize` (dry-run / optimized / no-span).
 
-Start with `dryRun: true` for a few days: a high `decider-fail` rate means the decision service is unstable; if follow-ups get misclassified as `new_task` (watch `optimize/dry-run`), tune the decision criteria. Turn `dryRun: false` only once the false-positive rate looks right.
+Retention: the shared `startStatsService` (both entry points — the index.mjs in-app service and the serve.mjs daemon) prunes day files older than `POM_RETAIN_DAYS` (default `7`) at startup and every 24h; `0`/negative keeps everything. Installs that only use the in-app page never grow `stats/` unbounded either. The legacy single-file `stats.ndjson` is no longer read — archive it yourself if you want the history.
+
+`decider-fail-rule`: when the decision model is unavailable (timeout / network / parse failure) the hook no longer passes the whole request through — it falls back to the rules-only path (first turns still get optimized, threads pass conservatively, same semantics as `deciderGroup=""`), so a flapping decider never disables the plugin entirely.
+
+Start with `dryRun: true` for a few days: a high `decider-fail` / `decider-fail-rule` rate means the decision service is unstable (on failure the hook falls back to rules-only behavior — threads pass, first turns still get optimized); if follow-ups get misclassified as `new_task` (watch `optimize/dry-run`), tune the decision criteria. Turn `dryRun: false` only once the false-positive rate looks right.
 
 ## Tests
 
@@ -105,7 +113,7 @@ Start with `dryRun: true` for a few days: a high `decider-fail` rate means the d
 node --test     # or npm test
 ```
 
-48 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, plus regressions for this round's review fixes (decider receives the user text, rules-only thread pass-through, output-guard short-input expansion).
+107 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, LAN bind, plus regressions for this round's review fixes (decider failure falls back to rules-only, output ceiling scales with original length, decider receives the user text, rules-only thread pass-through, output-guard short-input expansion).
 
 ## Template provenance & syncing
 

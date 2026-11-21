@@ -64,7 +64,9 @@ magpie plugin options prompt-optimizer-magpie '{
   "deciderTimeoutMs": 1500,
   "optimizeTimeoutMs": 15000,
   "gatewayTimeoutMs": 25000,
-  "gatewayUrl": "http://127.0.0.1:3425"
+  "gatewayUrl": "http://127.0.0.1:3425",
+  "port": 0,
+  "bind": "127.0.0.1"
 }'
 ```
 
@@ -91,11 +93,13 @@ magpie plugin options prompt-optimizer-magpie '{
 | `logSkips` | `true` | `false` 时不记录常规 `pass` 事件（not-turn / self-loop / no-tools 等噪音）；**失败类始终记录**（optimize-fail / decider-fail / optimize-empty / error），排障不瞎 |
 | `logOptimizes` | `true` | `false` 时不记录成功路径的 `optimize` / `decide` 事件（optimized / cache-hit / dry-run / followup 等）；失败类不受此开关影响 |
 
+| `port` / `bind` | `0` / `127.0.0.1` | 统计服务监听：`port=0` OS 自动分配；`bind` 默认仅本机回环。**开 LAN 访问（如 `0.0.0.0`）= stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）对内网可见**，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
+
 ## 日志布局与保留（按天分文件，7 天清理）
 
-事件写在插件目录 `stats/` 下，**每天一个文件**（`stats/YYYY-MM-DD.ndjson`，UTC）。为什么不是单文件：`record()` 在 magpie plugin-host 进程里 append，而 `prune()` 在 serve.mjs（systemd）进程里执行——两个进程对同一个文件做「重写+rename」和「append」存在竞态（rename 瞬间落地的 append 会写进旧 inode 丢一条）。按天分文件后，保留策略变成 **unlink 整个过期日文件**，写者永远只 append 今天的文件，两边操作的 inode 不相交，竞态从结构上消除；单文件也不再无限增长，prune 从全量重写降为删文件。
+事件写在插件目录 `stats/` 下，**每天一个文件**（`stats/YYYY-MM-DD.ndjson`，UTC）。为什么不是单文件：`record()` 在 magpie plugin-host 进程里 append，而 `prune()` 在服务进程里执行——两个进程对同一个文件做「重写+rename」和「append」存在竞态（rename 瞬间落地的 append 会写进旧 inode 丢一条）。按天分文件后，保留策略变成 **unlink 整个过期日文件**，写者永远只 append 今天的文件，两边操作的 inode 不相交，竞态从结构上消除；单文件也不再无限增长，prune 从全量重写降为删文件。
 
-- `serve.mjs` 启动时和每 24 小时执行一次 `prune`：删除文件名日期早于 `POM_RETAIN_DAYS`（默认 `7`）的日文件；`0` 或负数 = 永久保留。
+- `prune` 由共享的 `startStatsService` 在**两个入口**（index.mjs 宿主内服务 + serve.mjs daemon）启动时和每 24 小时执行：删除文件名日期早于 `POM_RETAIN_DAYS`（默认 `7`）的日文件；`0` 或负数 = 永久保留。只跑 in-app 页面、不部署 serve.mjs 的安装也会自动清理。
 - systemd 部署示例：`Environment=POM_RETAIN_DAYS=7`。
 - 旧版单文件 `stats.ndjson` 不再读取；如需保留历史请自行归档。
 
@@ -106,15 +110,17 @@ magpie plugin options prompt-optimizer-magpie '{
 - 剥离 ``` 代码围栏；
 - 长度下限 `0.4×` 原文（防止越改越短）；
 - 长度上限 `max(3×原文, 1500)`——短需求本就该展开成长结构化提示词（实测 17 字需求 → 552 字提示词是期望效果），固定 3× 会误杀所有短输入；
-- 绝对上限 `6000` 字，防异常膨胀。
+- 绝对上限 `max(6000, 原文长度)`——上限随 `maxChars` 放行宽度联动，合法长输入不会「优化完再被固定 6000 丢弃」。
 
 替换只动最后一条 user 消息中**唯一匹配**的用户原文 span：先逐字匹配，失败后空白规范化匹配；零命中或多重命中一律放行，绝不用 `ctx.query` 整段覆盖。
 
 ## 统计与灰度
 
-每次经过钩子都会向插件目录 `stats/YYYY-MM-DD.ndjson`（当日文件）追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
+每次经过钩子都会向插件目录 `stats/YYYY-MM-DD.ndjson`（当日文件）追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / decider-fail-rule / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
 
-建议先 `dryRun: true` 跑几天：若 `decider-fail` 偏多说明决策服务不稳；若追问被误判为 `new_task` 偏多（看 `optimize/dry-run`），需调整决策 criteria。确认无误判后再 `dryRun: false`。
+`decider-fail-rule`：决策模型不可用（超时/网络/解析失败）时不再整条放行，而是回落纯规则路径——首轮照常优化，长线程保守放行（同 `deciderGroup=""` 语义），decider 抖动期间插件不整体失效。
+
+建议先 `dryRun: true` 跑几天：若 `decider-fail` / `decider-fail-rule` 偏多说明决策服务不稳；若追问被误判为 `new_task` 偏多（看 `optimize/dry-run`），需调整决策 criteria。确认无误判后再 `dryRun: false`。
 
 ## 测试
 
@@ -122,7 +128,7 @@ magpie plugin options prompt-optimizer-magpie '{
 node --test     # 或 npm test
 ```
 
-48 个用例：四协议 turn 判定、门禁、span 唯一匹配、fail-open（决策 500 / 决策超时 / 优化超时 / 死网关 / 垃圾 JSON）、统计、以及本轮评审修复的回归（决策器收原文、纯规则长线程放行、output-guard 短输入展开）。
+107 个用例：四协议 turn 判定、门禁、span 唯一匹配、fail-open（决策 500 / 决策超时 / 优化超时 / 死网关 / 垃圾 JSON）、统计、模板档位与语言选择、LAN bind、以及本轮评审修复的回归（决策失败回落纯规则、输出上限随原文长度、决策器收原文、纯规则长线程放行、output-guard 短输入展开）。
 
 ## 模板来源与同步
 

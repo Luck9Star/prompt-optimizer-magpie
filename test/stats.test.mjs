@@ -1,17 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { onRequest } from "../hooks.mjs";
 
+// tmp statsDir via options.statsDir — never touch the real stats/ dir.
+const dir = mkdtempSync(join(tmpdir(), "pom-stats-"));
+const FILE = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
 const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
-const FILE = fileURLToPath(new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url));
 
 test("stats: events appended with required fields", async () => {
   const body = { tools: [{}], messages: [{ role: "user", content: "帮我把这个模糊的需求优化成具体的提示词描述丁" }] };
-  await onRequest(body, { protocol: "chat", agent: "claude-code", kind: "", query: "", options: { gatewayUrl: "http://127.0.0.1:1", deciderGroup: "" } });
-  assert.ok(existsSync(FILE), "stats.ndjson created next to plugin root");
-  // parallel files append to one stats.ndjson — poll for OUR unique line
+  await onRequest(body, { protocol: "chat", agent: "claude-code", kind: "", query: "", options: { gatewayUrl: "http://127.0.0.1:1", deciderGroup: "", statsDir: dir } });
+  assert.ok(existsSync(FILE), "day file created in options.statsDir");
+  // poll for OUR unique line (inputChars is the discriminating field)
   let ev;
   for (let i = 0; i < 40 && !ev; i++) {
     const rows = readFileSyncTolerant(FILE).trim().split("\n").map((l) => JSON.parse(l));
@@ -25,3 +28,5 @@ test("stats: events appended with required fields", async () => {
   assert.equal(ev.reason, "optimize-fail"); // dead gateway → fail open
   assert.equal(ev.dryRun, true);
 });
+
+test("teardown", () => rmSync(dir, { recursive: true, force: true }));

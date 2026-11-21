@@ -3,17 +3,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { onRequest } from "../hooks.mjs";
 import { mockGateway } from "./helpers.gateway.mjs";
 
+// tmp statsDir via options.statsDir — never touch the real stats/ dir.
+const dir = mkdtempSync(join(tmpdir(), "pom-tier-"));
 const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
-const FILE = new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url);
-// Tests run in parallel across files appending to one stats.ndjson — read back
-// and scan for OUR line (matched by the unique prompt text) instead of the
-// racy "last line" heuristic.
+const FILE = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
+// record() appends async-visible lines; read back and scan for OUR line
+// (matched by the unique prompt text) instead of the racy "last line".
 const findMine = (needle, tries = 40) => {
   for (let i = 0; i < tries; i++) {
-    const rows = readFileSyncTolerant(FILE).trim().split("\n").map((l) => JSON.parse(l));
+    const rows = readFileSyncTolerant(FILE).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const hit = rows.reverse().find((r) => JSON.stringify(r).includes(needle));
     if (hit) return hit;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
@@ -21,7 +25,7 @@ const findMine = (needle, tries = 40) => {
   throw new Error("stats line not found for: " + needle);
 };
 const body1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个限流方案，要求支持动态阈值乙" }] };
-const ctx = (url, opts) => ({ protocol: "chat", agent: "t", kind: "", query: "", options: { gatewayUrl: url, ...opts } });
+const ctx = (url, opts) => ({ protocol: "chat", agent: "t", kind: "", query: "", options: { gatewayUrl: url, statsDir: dir, ...opts } });
 
 const LONG = "优化后的提示词内容，足够长以通过护栏长度检查要求。";
 
@@ -136,3 +140,5 @@ test("cache: expired entries are pruned from the file on next load", async () =>
     assert.equal(Object.keys(after).length, 1); // only b2's fresh entry remains
   } finally { gw.close(); rmSync(cf3, { force: true }); }
 });
+
+test("teardown", () => rmSync(dir, { recursive: true, force: true }));

@@ -44,13 +44,21 @@
       "maxChars": 12000,
       "bypassPrefix": ["!!", "##"],
       "bypassModels": [],
+      "bypassAgents": [],
       "allowedOrigins": [],
       "skipToolless": true,
+      "cacheTtlMs": 60000,
+      "logRewrites": true,
+      "logRewriteChars": 600,
+      "logSkips": true,
+      "logOptimizes": true,
+      "debugDump": false,
       "deciderTimeoutMs": 1500,
       "optimizeTimeoutMs": 15000,
       "gatewayTimeoutMs": 25000,
       "gatewayUrl": "http://127.0.0.1:3425",
-      "port": 0
+      "port": 0,
+      "bind": "127.0.0.1"
     }
   },
   "engines": {
