@@ -71,7 +71,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 总开关 |
-| `dryRun` | `true` | 干跑：走完整链路并记日志，但**不改写**请求。先 dry run 几天看 `stats.ndjson`，确认无误判再关 |
+| `dryRun` | `true` | 干跑：走完整链路并记日志，但**不改写**请求。先 dry run 几天看 `stats/` 日志，确认无误判再关 |
 | `deciderGroup` | `group/route-decider` | 决策模型组；留空 `""` = 纯规则模式（长线程全放行，只优化首轮） |
 | `optimizeGroup` | `group/prompt-optimize` | 优化调用的模型组 |
 | `minChars` / `maxChars` | `6` / `12000` | 用户原文长度窗口。`<minChars` 同步硬放行；`maxChars` 是防整本书粘贴的绝对上限，正常范围内的长文本交决策模型判断 |
@@ -91,12 +91,13 @@ magpie plugin options prompt-optimizer-magpie '{
 | `logSkips` | `true` | `false` 时不记录常规 `pass` 事件（not-turn / self-loop / no-tools 等噪音）；**失败类始终记录**（optimize-fail / decider-fail / optimize-empty / error），排障不瞎 |
 | `logOptimizes` | `true` | `false` 时不记录成功路径的 `optimize` / `decide` 事件（optimized / cache-hit / dry-run / followup 等）；失败类不受此开关影响 |
 
-## 日志保留（7 天清理）
+## 日志布局与保留（按天分文件，7 天清理）
 
-`stats.ndjson` 会无限增长。`serve.mjs` 启动时和每 24 小时执行一次 `prune`：删除 `ts` 早于 7 天前的行（temp 文件 + rename，崩溃不会截断日志；损坏行保留不删）。
+事件写在插件目录 `stats/` 下，**每天一个文件**（`stats/YYYY-MM-DD.ndjson`，UTC）。为什么不是单文件：`record()` 在 magpie plugin-host 进程里 append，而 `prune()` 在 serve.mjs（systemd）进程里执行——两个进程对同一个文件做「重写+rename」和「append」存在竞态（rename 瞬间落地的 append 会写进旧 inode 丢一条）。按天分文件后，保留策略变成 **unlink 整个过期日文件**，写者永远只 append 今天的文件，两边操作的 inode 不相交，竞态从结构上消除；单文件也不再无限增长，prune 从全量重写降为删文件。
 
-- 环境变量 `POM_RETAIN_DAYS`（默认 `7`）调整天数；`0` 或负数 = 永久保留。
+- `serve.mjs` 启动时和每 24 小时执行一次 `prune`：删除文件名日期早于 `POM_RETAIN_DAYS`（默认 `7`）的日文件；`0` 或负数 = 永久保留。
 - systemd 部署示例：`Environment=POM_RETAIN_DAYS=7`。
+- 旧版单文件 `stats.ndjson` 不再读取；如需保留历史请自行归档。
 
 ## 输出护栏
 
@@ -111,7 +112,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 ## 统计与灰度
 
-每次经过钩子都会向插件目录下的 `stats.ndjson` 追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
+每次经过钩子都会向插件目录 `stats/YYYY-MM-DD.ndjson`（当日文件）追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
 
 建议先 `dryRun: true` 跑几天：若 `decider-fail` 偏多说明决策服务不稳；若追问被误判为 `new_task` 偏多（看 `optimize/dry-run`），需调整决策 criteria。确认无误判后再 `dryRun: false`。
 

@@ -3,10 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, get } from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startStatsService, aggregate, readEvents } from "../lib/stats-service.mjs";
+import { startStatsService, aggregate } from "../lib/stats-service.mjs";
+import { readEvents } from "../lib/stats.mjs";
 
 const once = (port, path) =>
   new Promise((resolve, reject) => {
@@ -19,8 +20,9 @@ const once = (port, path) =>
 
 test("stats-service: ephemeral bind serves / and /api/stats", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pom-svc-"));
-  writeFileSync(join(dir, "stats.ndjson"), JSON.stringify({ ts: 1, agent: "a", action: "pass", reason: "not-turn" }) + "\n");
-  const svc = await startStatsService({ port: 0, statsFile: join(dir, "stats.ndjson") });
+  mkdirSync(join(dir, "stats"), { recursive: true });
+  writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), JSON.stringify({ ts: 1, agent: "a", action: "pass", reason: "not-turn" }) + "\n");
+  const svc = await startStatsService({ port: 0, statsDir: join(dir, "stats") });
   try {
     assert.equal(svc.reused, false);
     assert.ok(svc.port > 0, "ephemeral port assigned");
@@ -36,10 +38,10 @@ test("stats-service: ephemeral bind serves / and /api/stats", async () => {
 
 test("stats-service: busy port with a live stats service → reused, original untouched", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pom-svc-reuse-"));
-  const first = await startStatsService({ port: 0, statsFile: join(dir, "stats.ndjson") }); // ephemeral
+  const first = await startStatsService({ port: 0, statsDir: join(dir, "stats") }); // ephemeral
   try {
     // bind the SAME server again on first.port via a second startStatsService
-    const second = await startStatsService({ port: first.port, statsFile: join(dir, "stats.ndjson") });
+    const second = await startStatsService({ port: first.port, statsDir: join(dir, "stats") });
     assert.equal(second.reused, true, "detected existing stats service");
     assert.equal(second.port, first.port);
     await second.close(); // no-op by contract
@@ -57,7 +59,7 @@ test("stats-service: foreign occupant → retries then throws, never kills the o
   const port = blocker.address().port;
   try {
     await assert.rejects(
-      () => startStatsService({ port, statsFile: "/nonexistent/x.ndjson" }),
+      () => startStatsService({ port, statsDir: "/nonexistent/x.ndjson" }),
       /busy and no stats service answers/,
     );
     // blocker survived the retry storm

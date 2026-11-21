@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { get, createServer } from "node:http";
@@ -76,7 +76,8 @@ test("serve: aggregation over known ndjson + corrupted line tolerance", async ()
     { ts: 5, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 800, inputChars: 60, outputChars: 150, dryRun: true },
     { ts: 6, agent: "hermes", action: "pass", reason: "bypass-prefix", durationMs: 3, inputChars: 10, outputChars: 0, dryRun: true },
   ];
-  writeFileSync(join(dir, "stats.ndjson"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n{corrupted!!\n");
+  mkdirSync(join(dir, "stats"), { recursive: true });
+  writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n{corrupted!!\n");
 
   const { child, serviceJson } = await startServe(dir);
   try {
@@ -139,7 +140,11 @@ test("serve: startup prune honors POM_RETAIN_DAYS (7d default behavior)", async 
     { ts: NOW - 8 * 86400_000, agent: "a", action: "pass", reason: "not-turn", durationMs: 1, inputChars: 0, outputChars: 0, dryRun: true },
     { ts: NOW, agent: "a", action: "pass", reason: "not-turn", durationMs: 1, inputChars: 0, outputChars: 0, dryRun: true },
   ];
-  writeFileSync(join(dir, "stats.ndjson"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  mkdirSync(join(dir, "stats"), { recursive: true });
+  // day-file layout: retention is by FILE date — the 8d-old event goes in an
+  // 8-day-old file, the fresh one in today's file
+  writeFileSync(join(dir, "stats", new Date(NOW - 8 * 86400_000).toISOString().slice(0, 10) + ".ndjson"), JSON.stringify(lines[0]) + "\n");
+  writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), JSON.stringify(lines[1]) + "\n");
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
     env: { ...process.env, PORT: "0", POM_DATA_DIR: dir }, // no POM_RETAIN_DAYS → default 7
     stdio: "ignore",

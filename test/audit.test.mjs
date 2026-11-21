@@ -7,12 +7,13 @@ import { fileURLToPath } from "node:url";
 import { onRequest } from "../hooks.mjs";
 import { mockGateway } from "./helpers.gateway.mjs";
 
-const FILE = fileURLToPath(new URL("../stats.ndjson", import.meta.url));
+const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
+const FILE = fileURLToPath(new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url));
 // Parallel test files append to one stats.ndjson — scan for OUR event by a
 // unique marker instead of racing on the last line.
 const findMine = (needle, tries = 40) => {
   for (let i = 0; i < tries; i++) {
-    const rows = readFileSync(FILE, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const rows = readFileSyncTolerant(FILE).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const hit = rows.reverse().find((r) => JSON.stringify(r).includes(needle));
     if (hit) return hit;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
@@ -69,7 +70,7 @@ test("audit: logRewrites=false drops text fields but keeps counters", async () =
     // optimized + inputChars 19 + no orig field (logRewrites=false).
     const ev = (() => {
       for (let i = 0; i < 40; i++) {
-        const rows = readFileSync(FILE, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+        const rows = readFileSyncTolerant(FILE).trim().split("\n").map((l) => JSON.parse(l));
         const hit = rows.reverse().find((r) => r.agent === "t" && r.reason === "optimized" && r.inputChars === 19 && !("orig" in r));
         if (hit) return hit;
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);

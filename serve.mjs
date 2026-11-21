@@ -10,13 +10,13 @@ import { makeStatsServer } from "./lib/stats-service.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const DATA_DIR = process.env.POM_DATA_DIR || ROOT;
-const STATS = join(DATA_DIR, "stats.ndjson");
+const STATS = join(DATA_DIR, "stats"); // daily day-files (lib/stats.mjs)
 const SERVICE = join(DATA_DIR, "service.json");
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 // 日志保留：默认 7 天；0/负数 = 永久保留。70 上部署目录大小可控。
 const RETAIN_DAYS = Number(process.env.POM_RETAIN_DAYS ?? 7) || 0;
 
-const server = makeStatsServer({ statsFile: STATS });
+const server = makeStatsServer({ statsDir: STATS });
 // design §6: ephemeral (PORT=0) is the norm; a fixed PORT may hit EADDRINUSE —
 // per candidate: same-port retry 16×100ms (a leaving process's socket often
 // clears), then move to the next candidate (fixed fallback 3497 for the page's

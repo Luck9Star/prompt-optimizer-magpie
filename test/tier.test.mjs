@@ -6,13 +6,14 @@ import { readFileSync } from "node:fs";
 import { onRequest } from "../hooks.mjs";
 import { mockGateway } from "./helpers.gateway.mjs";
 
-const FILE = new URL("../stats.ndjson", import.meta.url);
+const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
+const FILE = new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url);
 // Tests run in parallel across files appending to one stats.ndjson — read back
 // and scan for OUR line (matched by the unique prompt text) instead of the
 // racy "last line" heuristic.
 const findMine = (needle, tries = 40) => {
   for (let i = 0; i < tries; i++) {
-    const rows = readFileSync(FILE, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const rows = readFileSyncTolerant(FILE).trim().split("\n").map((l) => JSON.parse(l));
     const hit = rows.reverse().find((r) => JSON.stringify(r).includes(needle));
     if (hit) return hit;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);

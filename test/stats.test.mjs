@@ -4,7 +4,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { onRequest } from "../hooks.mjs";
 
-const FILE = fileURLToPath(new URL("../stats.ndjson", import.meta.url));
+const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
+const FILE = fileURLToPath(new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url));
 
 test("stats: events appended with required fields", async () => {
   const body = { tools: [{}], messages: [{ role: "user", content: "帮我把这个模糊的需求优化成具体的提示词描述丁" }] };
@@ -13,7 +14,7 @@ test("stats: events appended with required fields", async () => {
   // parallel files append to one stats.ndjson — poll for OUR unique line
   let ev;
   for (let i = 0; i < 40 && !ev; i++) {
-    const rows = readFileSync(FILE, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const rows = readFileSyncTolerant(FILE).trim().split("\n").map((l) => JSON.parse(l));
     ev = rows.reverse().find((r) => r.agent === "claude-code" && r.reason === "optimize-fail" && r.inputChars === "帮我把这个模糊的需求优化成具体的提示词描述丁".length);
     if (!ev) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
   }

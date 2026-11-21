@@ -1,52 +1,54 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prune } from "../lib/stats.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "pom-prune-"));
-const f = join(dir, "stats.ndjson");
 const NOW = Date.now();
-const line = (ts, tag) => JSON.stringify({ ts, agent: "t", action: "pass", reason: "not-turn", tag });
+const day = (offsetDays) => new Date(NOW - offsetDays * 86400_000).toISOString().slice(0, 10);
 
-test("prune: drops >7d lines, keeps fresh + malformed, returns count", () => {
-  writeFileSync(f, [
-    line(NOW - 8 * 86400_000, "old1"),
-    line(NOW - 9 * 86400_000, "old2"),
-    "{broken json",
-    line(NOW - 1 * 86400_000, "new1"),
-    line(NOW, "new2"),
-  ].join("\n") + "\n");
-  const removed = prune(7, NOW, f);
+test("prune: unlinks day files older than retainDays, keeps recent, returns count", () => {
+  const s = join(dir, "stats");
+  mkdirSync(s, { recursive: true });
+  writeFileSync(join(s, `${day(8)}.ndjson`), JSON.stringify({ ts: NOW - 8 * 86400_000 }) + "\n");
+  writeFileSync(join(s, `${day(9)}.ndjson`), "{broken json\n"); // old + malformed content: file still goes by NAME
+  writeFileSync(join(s, `${day(1)}.ndjson`), JSON.stringify({ ts: NOW - 86400_000 }) + "\n");
+  writeFileSync(join(s, "not-a-day.log"), "x"); // malformed filename → untouched
+  const removed = prune(7, NOW, s);
   assert.equal(removed, 2);
-  const rows = readFileSync(f, "utf8").trim().split("\n");
-  assert.equal(rows.length, 3); // malformed + 2 fresh kept
-  assert.ok(rows.some((r) => r.includes("broken"))); // malformed never dropped
-  assert.ok(rows.every((r) => !r.includes("old")));
+  assert.deepEqual(readdirSync(s).sort(), [`${day(1)}.ndjson`, "not-a-day.log"]);
 });
 
-test("prune: no expired lines → file untouched (returns 0)", () => {
-  const before = readFileSync(f, "utf8");
-  assert.equal(prune(7, NOW, f), 0);
-  assert.equal(readFileSync(f, "utf8"), before);
+test("prune: no expired files → dir untouched (returns 0)", () => {
+  const s = join(dir, "stats2");
+  mkdirSync(s, { recursive: true });
+  writeFileSync(join(s, `${day(1)}.ndjson`), "{}\n");
+  assert.equal(prune(7, NOW, s), 0);
+  assert.equal(readdirSync(s).length, 1);
 });
 
 test("prune: retainDays<=0 disables (returns 0)", () => {
-  writeFileSync(f, line(NOW - 30 * 86400_000, "ancient") + "\n");
-  assert.equal(prune(0, NOW, f), 0);
-  assert.ok(readFileSync(f, "utf8").includes("ancient"));
+  const s = join(dir, "stats3");
+  mkdirSync(s, { recursive: true });
+  writeFileSync(join(s, "2000-01-01.ndjson"), "ancient\n");
+  assert.equal(prune(0, NOW, s), 0);
+  assert.equal(prune(-3, NOW, s), 0);
+  assert.equal(readdirSync(s).length, 1);
 });
 
-test("prune: missing file → 0, no throw", () => {
-  assert.equal(prune(7, NOW, join(dir, "nope.ndjson")), 0);
+test("prune: missing dir → 0, no throw", () => {
+  assert.equal(prune(7, NOW, join(dir, "nope")), 0);
 });
 
-const FILE = fileURLToPath(new URL("../stats.ndjson", import.meta.url));
-const rowsFor = (agent) => readFileSync(FILE, "utf8").trim().split("\n").filter(Boolean)
-  .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-  .filter((r) => r && r.agent === agent);
+const FILE = fileURLToPath(new URL("../stats/" + new Date().toISOString().slice(0, 10) + ".ndjson", import.meta.url));
+const rowsFor = (agent) => { try {
+  return readFileSync(FILE, "utf8").trim().split("\n").filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter((r) => r && r.agent === agent);
+} catch { return []; } };
 const waitAgent = async (agent, ms = 2000) => {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
