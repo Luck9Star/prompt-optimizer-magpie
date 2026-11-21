@@ -37,6 +37,11 @@
         let port = FALLBACK_PORT;
         let service = "";
         try {
+          // The bridge is served beside this page (_magpie/bridge.js): loading
+          // it answers magpie's hello handshake (the frame counts as alive)
+          // and yields the service URL through the gateway proxy — same
+          // origin as the UI, reachable from any machine the UI is open on.
+          await import("./_magpie/bridge.js");
           await window.magpie?.ready; // bridge optional — page degrades without it
           const opts = await window.magpie?.options?.get?.();
           const v = Number(opts?.port);
@@ -44,11 +49,8 @@
           const s = window.magpie?.service;
           if (typeof s === "string" && /^https?:\/\//.test(s)) service = s;
         } catch { /* stay on defaults */ }
-        // The sandbox page is served by the gateway (/_magpie/plugin/...), so
-        // its own hostname is the host the browser reached the UI on. Service
-        // binds 0.0.0.0 for LAN use (option bind), so same-host access works
-        // from any machine the UI is open on; 127.0.0.1 would point at the
-        // visitor's own machine instead.
+        // shortcut: service is always set when the bridge loaded; the
+        // host-based fallback covers bridge-less contexts (plain static serve)
         const host = location.hostname || "127.0.0.1";
         location.replace(service || `http://${host}:${port}/`);
         clearTimeout(timer);
