@@ -121,7 +121,7 @@ test("serve: occupied fixed port retries then binds fallback 3497", async () => 
     }
     const info = JSON.parse(readFileSync(serviceJson, "utf8"));
     assert.equal(info.port, 3497, `expected fallback 3497, got ${info.port}; out=${out}`);
-    assert.ok(/retrying \(1\/16\)/.test(out), "retry line logged");
+    assert.ok(/retrying \(15 left\)/.test(out) && /port 3500 busy, trying 3497/.test(out), `retry+shift lines logged; out=${out}`);
     const res = await once(info.port, "/api/stats");
     assert.equal(res.status, 200, "fallback port serves requests");
   } finally {
