@@ -84,3 +84,39 @@ test("turn: pure billion-context resume note is not user text", () => {
   const wire = { tools: [{}], messages: [{ role: "user", content: "[billion-context] Continue now: state your final answer." }] };
   assert.equal(lastUserText(wire, "chat"), undefined);
 });
+
+// opencode session-start: OpenViking memory injection (real dump shape,
+// 2026-11-21 greytest, origLen=16205) — real user text sits at the END.
+test("turn: chat strips openviking-context injection, keeps trailing user text", () => {
+  const inj = `<openviking-context source="session-start">\n<user-profile uri="viking://user/default/memories/profile.md">\n# PROFILE\n- 有哮喘病史\n</user-profile>\n<available-memories>\n  viking://user/default/memories/\n</available-memories>\n</openviking-context>`
+  const body = {
+    messages: [
+      { role: "system", content: "sys" },
+      { role: "user", content: `<acp tokens="5.4K" type="text" time="2026-11-21 10:19:30">m00001</acp>\n${inj}\n帮我写个函数判断字符串是不是回文，用 Python，回答两行以内` },
+    ],
+  }
+  const lu = lastUserText(body, "chat")
+  assert.strictEqual(lu.text, "帮我写个函数判断字符串是不是回文，用 Python，回答两行以内")
+})
+
+// grok CLI wraps the whole user turn in <user_query>; unwrap so the
+// optimizer sees the raw prompt (2026-11-21 greytest dump shape).
+test("turn: chat unwraps grok <user_query> wrapper", () => {
+  const body = { messages: [{ role: "user", content: "<user_query>\n帮我在 /tmp/graytest/grok2.txt 里写一句话介绍什么是幂等性\n</user_query>" }] }
+  const lu = lastUserText(body, "chat")
+  assert.strictEqual(lu.text, "帮我在 /tmp/graytest/grok2.txt 里写一句话介绍什么是幂等性")
+})
+
+// quoted <user_query> mid-text stays untouched
+test("turn: quoted <user_query> mid-text is preserved", () => {
+  const body = { messages: [{ role: "user", content: "解释 <user_query> 标签是干嘛的，两行以内" }] }
+  const lu = lastUserText(body, "chat")
+  assert.strictEqual(lu.text, "解释 <user_query> 标签是干嘛的，两行以内")
+})
+
+// omp composer ghost prediction rides along in first user message; strip it.
+test("turn: chat strips omp <composer-prediction> ghost text", () => {
+  const body = { messages: [{ role: "user", content: "<composer-prediction>帮我继续写完这段</composer-prediction>\n帮我在 /tmp 里建一个 omp 灰测文件写 hello" }] }
+  const lu = lastUserText(body, "chat")
+  assert.strictEqual(lu.text, "帮我在 /tmp 里建一个 omp 灰测文件写 hello")
+})

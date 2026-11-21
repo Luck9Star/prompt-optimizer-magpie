@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 // Minimal gateway mock: `/v1/chat/completions` returns `{optimize}` as the
 // completion content; `/v1/systemone` returns `{decider}` as answers.noul.
 // `hang` paths never respond (timeout tests); `raw` returns a literal body.
-export function mockGateway({ optimize = "ok", decider = { choice: "new_task", confidence: 0.9 }, hang = [], deciderStatus = 200, deciderRaw } = {}) {
+export function mockGateway({ optimize = "ok", decider = { choice: "new_task", confidence: 0.9 }, hang = [], deciderStatus = 200, deciderRaw, optimizeStatus = 200 } = {}) {
   const seen = [];
   const server = createServer((req, res) => {
     let buf = "";
@@ -18,6 +18,9 @@ export function mockGateway({ optimize = "ok", decider = { choice: "new_task", c
         const answers = { noul: decider };
         if (decider && decider.tpl) answers.tpl = decider.tpl;
         res.end(deciderRaw !== undefined ? deciderRaw : JSON.stringify({ answers }));
+      } else if (optimizeStatus !== 200) {
+        res.statusCode = optimizeStatus;
+        res.end(JSON.stringify({ error: "mock optimize failure" }));
       } else {
         res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: optimize } }] }));
       }

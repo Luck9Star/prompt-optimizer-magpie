@@ -25,7 +25,29 @@ const DEFAULTS = {
 
 // design §4.6: same prompt retried by the agent within cacheTtlMs reuses the
 // previous optimization instead of burning another optimizer call.
-const cache = new Map();
+// Magpie's plugin-host is short-lived: it spawns per gateway run and exits
+// when idle (host exit on stdin close / pending==0), so a module-level Map
+// dies with it. Persist the small cache (orig-hash → {ts,out}) on disk next
+// to stats.ndjson and reload it on every onRequest — measured cost is one
+// small JSON read per request; entries expire by TTL on read.
+import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+const CACHE_FILE = new URL("./.cache.json", import.meta.url).pathname;
+const loadCache = (f) => {
+  try { return JSON.parse(readFileSync(f, "utf8")); } catch { return {}; }
+};
+// design §4.6: prune entries older than ttl on load, so .cache.json stops
+// growing without bound. Cap iterations to keep the prune cheap.
+const pruneCache = (m, ttlMs, now = Date.now()) => {
+  let removed = 0;
+  for (const k of Object.keys(m)) {
+    if (now - (m[k].ts || 0) > ttlMs) { delete m[k]; removed++; }
+  }
+  return removed;
+};
+const saveCache = (f, m) => {
+  try { writeFileSync(f, JSON.stringify(m)); } catch { /* best-effort */ }
+};
 // Key includes gatewayUrl + dryRun so tests (and mixed deployments) with
 // different backends never share entries; agent scoping is per design §4.6.
 const cacheKey = (agent, orig, gw, dry) => `${agent}|${gw}|${dry ? 1 : 0}|${orig}`;
@@ -56,9 +78,19 @@ export async function onRequest(body, ctx) {
       inputChars: x.in || 0,
       outputChars: x.out || 0,
       dryRun: !!o.dryRun,
+      ...(x.markCache !== undefined ? { fromCache: !!x.markCache } : {}),
       ...(x.origText !== undefined && clip(x.origText) !== undefined ? { orig: clip(x.origText) } : {}),
       ...(x.newText !== undefined && clip(x.newText) !== undefined ? { rewritten: clip(x.newText) } : {}),
     });
+    // design §7: ctx.report fixed result codes — ready (rewrite applied) /
+    // unavailable (hook failed, fail-open passthrough) / skipped (gate pass).
+    // Every exit path logs exactly once, so this reports exactly once too.
+    if (typeof (ctx && ctx.report) === "function") {
+      const code = action === "optimize" && (reason === "optimized" || reason === "cache-hit") ? "ready"
+        : ["decider-fail", "optimize-fail", "optimize-empty", "error"].includes(reason) ? "unavailable"
+        : "skipped";
+      try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
+    }
   };
   const pass = (reason, extra) => {
     log("pass", reason, extra);
@@ -87,6 +119,18 @@ export async function onRequest(body, ctx) {
     const lu = lastUserText(body, protocol);
     if (!lu) return pass("no-user-text");
     const orig = lu.text;
+    if (o.debugDump) {
+      // probe: dump body when user text extracted, for wire-layer triage
+      try {
+        const util = await import("node:util");
+        const inspect = (v) => util.inspect(v, { depth: 6, maxArrayLength: 10, maxStringLength: 600, breakLength: 200 });
+        const { appendFileSync: af } = await import("node:fs");
+        const { join } = await import("node:path");
+        const { dirname, fileURLToPath } = await import("node:url");
+        const p = typeof o.debugDump === "string" ? o.debugDump : join(dirname(fileURLToPath(import.meta.url)), "..", "debug-dump.log");
+        af(p, `=== ${new Date().toISOString()} agent=${ctx && ctx.agent} model=${body && body.model} proto=${protocol} origLen=${orig.length} ===\n${inspect(body)}\n\n`);
+      } catch {}
+    }
     if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length });
@@ -130,7 +174,14 @@ export async function onRequest(body, ctx) {
     // design §4.6: agent retry of the same prompt within cacheTtlMs reuses the
     // previous optimization instead of burning another optimizer call.
     const ck = cacheKey((ctx && ctx.agent) || "", orig, o.gatewayUrl, o.dryRun);
-    const hit = cache.get(ck);
+    // short-lived host: load per request, hash the (long) key to keep the
+    // file small — collisions across sha256 keys are not a concern.
+    const ckHash = createHash("sha256").update(ck).digest("hex").slice(0, 24);
+    const diskCache = loadCache(o.cacheFile || CACHE_FILE);
+    // prune-on-load keeps the file bounded; persist only when something
+    // actually expired (avoid rewriting the file on every request).
+    if (pruneCache(diskCache, o.cacheTtlMs || 0) > 0) saveCache(o.cacheFile || CACHE_FILE, diskCache);
+    const hit = diskCache[ckHash];
     if (hit && Date.now() - hit.ts < (o.cacheTtlMs || 0)) {
       out = hit.out;
       fromCache = true;
@@ -149,14 +200,15 @@ export async function onRequest(body, ctx) {
       if (out.length < orig.length * 0.4 || out.length > maxOut || out.length > 6000)
         return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
       // only successful, guard-passing rewrites are cached
-      cache.set(ck, { ts: Date.now(), out });
+      diskCache[ckHash] = { ts: Date.now(), out };
+      saveCache(o.cacheFile || CACHE_FILE, diskCache);
     }
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
       log("optimize", "no-span", { in: orig.length, out: out.length, origText: orig, newText: out });
       return undefined;
     }
-    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, origText: orig, newText: out });
+    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, markCache: fromCache, origText: orig, newText: out });
     return o.dryRun ? undefined : newBody;
   } catch {
     return pass("error");

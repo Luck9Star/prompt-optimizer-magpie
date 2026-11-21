@@ -2,3 +2,5 @@
 node_modules/
 stats.ndjson
 service.json
+.cache.json
+debug-dump.log
