@@ -36,6 +36,15 @@ const CACHE_FILE = new URL("./.cache.json", import.meta.url).pathname;
 const loadCache = (f) => {
   try { return JSON.parse(readFileSync(f, "utf8")); } catch { return {}; }
 };
+// design §4.6: prune entries older than ttl on load, so .cache.json stops
+// growing without bound. Cap iterations to keep the prune cheap.
+const pruneCache = (m, ttlMs, now = Date.now()) => {
+  let removed = 0;
+  for (const k of Object.keys(m)) {
+    if (now - (m[k].ts || 0) > ttlMs) { delete m[k]; removed++; }
+  }
+  return removed;
+};
 const saveCache = (f, m) => {
   try { writeFileSync(f, JSON.stringify(m)); } catch { /* best-effort */ }
 };
@@ -73,6 +82,15 @@ export async function onRequest(body, ctx) {
       ...(x.origText !== undefined && clip(x.origText) !== undefined ? { orig: clip(x.origText) } : {}),
       ...(x.newText !== undefined && clip(x.newText) !== undefined ? { rewritten: clip(x.newText) } : {}),
     });
+    // design §7: ctx.report fixed result codes — ready (rewrite applied) /
+    // unavailable (hook failed, fail-open passthrough) / skipped (gate pass).
+    // Every exit path logs exactly once, so this reports exactly once too.
+    if (typeof (ctx && ctx.report) === "function") {
+      const code = action === "optimize" && (reason === "optimized" || reason === "cache-hit") ? "ready"
+        : ["decider-fail", "optimize-fail", "optimize-empty", "error"].includes(reason) ? "unavailable"
+        : "skipped";
+      try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
+    }
   };
   const pass = (reason, extra) => {
     log("pass", reason, extra);
@@ -160,6 +178,9 @@ export async function onRequest(body, ctx) {
     // file small — collisions across sha256 keys are not a concern.
     const ckHash = createHash("sha256").update(ck).digest("hex").slice(0, 24);
     const diskCache = loadCache(o.cacheFile || CACHE_FILE);
+    // prune-on-load keeps the file bounded; persist only when something
+    // actually expired (avoid rewriting the file on every request).
+    if (pruneCache(diskCache, o.cacheTtlMs || 0) > 0) saveCache(o.cacheFile || CACHE_FILE, diskCache);
     const hit = diskCache[ckHash];
     if (hit && Date.now() - hit.ts < (o.cacheTtlMs || 0)) {
       out = hit.out;

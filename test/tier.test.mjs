@@ -113,3 +113,25 @@ test("tier: debugDump writes a body dump when enabled", async () => {
     assert.ok(txt.includes("role: 'user'"), "body inspected");
   } finally { gw.close(); rmSync(dump, { force: true }); }
 });
+
+// prune-on-load: expired entries are physically removed from the cache file
+// on the next request (file stays bounded), fresh entries survive.
+test("cache: expired entries are pruned from the file on next load", async () => {
+  const cf3 = new URL("../tmp-cache-tier3.json", import.meta.url).pathname;
+  const { rmSync, readFileSync: rf } = await import("node:fs");
+  rmSync(cf3, { force: true });
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: LONG });
+  try {
+    const b1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个过期清理策略防止文件膨胀" }] };
+    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheFile: cf3 }));
+    // age the entry beyond TTL, then fire another request
+    const m = JSON.parse(rf(cf3, "utf8"));
+    for (const k of Object.keys(m)) m[k].ts = Date.now() - 9e6;
+    const { writeFileSync: wf } = await import("node:fs");
+    wf(cf3, JSON.stringify(m));
+    const b2 = { tools: [{}], messages: [{ role: "user", content: "帮我设计另一个完全不同的冷却策略" }] };
+    await onRequest(b2, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheFile: cf3 }));
+    const after = JSON.parse(rf(cf3, "utf8"));
+    assert.equal(Object.keys(after).length, 1); // only b2's fresh entry remains
+  } finally { gw.close(); rmSync(cf3, { force: true }); }
+});

@@ -113,3 +113,10 @@ test("turn: quoted <user_query> mid-text is preserved", () => {
   const lu = lastUserText(body, "chat")
   assert.strictEqual(lu.text, "解释 <user_query> 标签是干嘛的，两行以内")
 })
+
+// omp composer ghost prediction rides along in first user message; strip it.
+test("turn: chat strips omp <composer-prediction> ghost text", () => {
+  const body = { messages: [{ role: "user", content: "<composer-prediction>帮我继续写完这段</composer-prediction>\n帮我在 /tmp 里建一个 omp 灰测文件写 hello" }] }
+  const lu = lastUserText(body, "chat")
+  assert.strictEqual(lu.text, "帮我在 /tmp 里建一个 omp 灰测文件写 hello")
+})

@@ -82,3 +82,32 @@ test("audit: logRewrites=false drops text fields but keeps counters", async () =
     assert.equal(ev.inputChars, 19); // 丙 version
   } finally { gw.close(); }
 });
+
+// ctx.report contract (design §7): fixed codes, no user text; every exit
+// path reports exactly once.
+test("report: optimize→ready, pass→skipped, optimize-fail→unavailable", async () => {
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "一段足够长的、用于断言 report 结果码的优化后替换文本" });
+  try {
+    const codes = [];
+    const rpc = (code, bytes) => codes.push([code, bytes]);
+    await onRequest(singleUser("帮我把这个模糊需求改写成具体提示词丙"), { ...ctx(gw.url, { deciderGroup: "", dryRun: false }), report: rpc });
+    await onRequest(singleUser("## 直接放行验证"), { ...ctx(gw.url, { deciderGroup: "", dryRun: false }), report: rpc });
+    const ev = findMine("提示词丙");
+    assert.equal(ev.reason, "optimized");
+    assert.equal(codes.length, 2);
+    assert.equal(codes[0][0], "ready");
+    assert.ok(codes[0][1] > 0);
+    assert.equal(codes[1][0], "skipped");
+    assert.equal(codes[1][1], 0);
+  } finally { gw.close(); }
+});
+
+test("report: optimize-fail reports unavailable, request still passes", async () => {
+  // gateway that accepts decider but 500s the optimize call
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimizeStatus: 500 });
+  try {
+    const codes = [];
+    await onRequest(singleUser("帮我把这个会失败的需求改写成提示词丁"), { ...ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }), report: (c) => codes.push(c) });
+    assert.deepEqual(codes, ["unavailable"]);
+  } finally { gw.close(); }
+});
