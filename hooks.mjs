@@ -11,7 +11,7 @@ const DEFAULTS = {
   optimizeGroup: "group/prompt-optimize",
   minChars: 6,
   maxChars: 12000,
-  bypassPrefix: "!!",
+  bypassPrefix: ["!!", "##"],
   bypassModels: [],
   allowedOrigins: [],
   skipToolless: true,
@@ -31,15 +31,24 @@ const MUSTACHE = /\{\{#helpers\.toJson\}\}\s*\{\{\{originalPrompt\}\}\}\s*\{\{\/
 export async function onRequest(body, ctx) {
   const t0 = Date.now();
   const o = { ...DEFAULTS, ...((ctx && ctx.options) || {}) };
+  // 改写审计：记录 orig/rewritten 原文（截断），灰度期在插件层直接可查。
+  const clip = (s) => {
+    if (o.logRewrites === false) return undefined;
+    const n = o.logRewriteChars || 600;
+    return s.length > n ? s.slice(0, n) + `…(+${s.length - n} chars)` : s;
+  };
   const log = (action, reason, extra) => {
+    const x = extra || {};
     record({
       agent: (ctx && ctx.agent) || "",
       action,
       reason,
       durationMs: Date.now() - t0,
-      inputChars: (extra && extra.in) || 0,
-      outputChars: (extra && extra.out) || 0,
+      inputChars: x.in || 0,
+      outputChars: x.out || 0,
       dryRun: !!o.dryRun,
+      ...(x.origText !== undefined && clip(x.origText) !== undefined ? { orig: clip(x.origText) } : {}),
+      ...(x.newText !== undefined && clip(x.newText) !== undefined ? { rewritten: clip(x.newText) } : {}),
     });
   };
   const pass = (reason, extra) => {
@@ -59,7 +68,8 @@ export async function onRequest(body, ctx) {
       const origin = ctx && ctx.origin;
       if (typeof origin === "string" && origin && !o.allowedOrigins.includes(origin)) return pass("origin");
     }
-    if (typeof (ctx && ctx.query) === "string" && ctx.query.trimStart().startsWith(o.bypassPrefix)) return pass("bypass-prefix");
+    const prefixes = [].concat(o.bypassPrefix).filter(Boolean);
+    if (typeof (ctx && ctx.query) === "string" && prefixes.some((p) => ctx.query.trimStart().startsWith(p))) return pass("bypass-prefix");
 
     const protocol = (ctx && ctx.protocol) || "chat";
     if (o.skipToolless && !hasTools(body, protocol)) return pass("no-tools");
@@ -67,7 +77,7 @@ export async function onRequest(body, ctx) {
     const lu = lastUserText(body, protocol);
     if (!lu) return pass("no-user-text");
     const orig = lu.text;
-    if (orig.startsWith(o.bypassPrefix)) return pass("bypass-prefix");
+    if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length });
 
@@ -79,15 +89,15 @@ export async function onRequest(body, ctx) {
         d = undefined; // timeout / network / parse — 宁漏勿误
       }
       if (!d) {
-        log("decide", "decider-fail", { in: orig.length });
+        log("decide", "decider-fail", { in: orig.length, origText: orig });
         return undefined;
       }
       if (d.choice !== "new_task") {
-        log("decide", d.choice === "followup" ? "followup" : `choice:${d.choice}`, { in: orig.length });
+        log("decide", d.choice === "followup" ? "followup" : `choice:${d.choice}`, { in: orig.length, origText: orig });
         return undefined;
       }
       if (typeof d.confidence !== "number" || d.confidence < 0.6) {
-        log("decide", "low-confidence", { in: orig.length });
+        log("decide", "low-confidence", { in: orig.length, origText: orig });
         return undefined;
       }
     } else if (hasAssistantReply(body, protocol)) {
@@ -109,14 +119,14 @@ export async function onRequest(body, ctx) {
     // 3× 约束，6000 绝对上限兜底防异常膨胀。
     const maxOut = Math.max(orig.length * 3, 1500);
     if (out.length < orig.length * 0.4 || out.length > maxOut || out.length > 6000)
-      return pass("output-guard", { in: orig.length, out: out.length });
+      return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
 
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
-      log("optimize", "no-span", { in: orig.length, out: out.length });
+      log("optimize", "no-span", { in: orig.length, out: out.length, origText: orig, newText: out });
       return undefined;
     }
-    log("optimize", o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length });
+    log("optimize", o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, origText: orig, newText: out });
     return o.dryRun ? undefined : newBody;
   } catch {
     return pass("error");

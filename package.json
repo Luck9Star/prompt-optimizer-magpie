@@ -28,7 +28,7 @@
       "optimizeGroup": "group/prompt-optimize",
       "minChars": 6,
       "maxChars": 12000,
-      "bypassPrefix": "!!",
+      "bypassPrefix": ["!!", "##"],
       "bypassModels": [],
       "allowedOrigins": [],
       "skipToolless": true,

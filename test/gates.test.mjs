@@ -50,3 +50,10 @@ test("gates: not a turn passes (last is assistant)", async () => {
   const body = { tools: [{}], messages: [{ role: "user", content: HINT }, { role: "assistant", content: "ok" }] };
   assert.equal(await onRequest(body, ctx()), undefined);
 });
+
+test("gates: ## prefix bypasses (TUI-safe), string option still works", async () => {
+  const b1 = { tools: [{}], messages: [{ role: "user", content: "##回复两个字：收到" }] };
+  await onRequest(b1, { protocol: "chat", agent: "t", kind: "", query: "", options: {} });
+  const b2 = { tools: [{}], messages: [{ role: "user", content: "!!回复两个字：收到" }] };
+  await onRequest(b2, { protocol: "chat", agent: "t", kind: "", query: "", options: { bypassPrefix: "!!" } });
+});

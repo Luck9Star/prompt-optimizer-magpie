@@ -69,3 +69,18 @@ test("turn: gemini functionResponse-only opens no turn", () => {
   assert.equal(opensTurn(body, "gemini"), false);
   assert.equal(lastUserText(body, "gemini"), undefined);
 });
+
+test("turn: billion-context resume note appended after user text is stripped", () => {
+  const wire = { tools: [{}], messages: [{ role: "user", content: "回复两个字：跳过\n\n[billion-context] Your previous response ended without a tool call. Continue now: take your next concrete action — issue the tool call you were about to make, or state your final answer explicitly." }] };
+  assert.equal(lastUserText(wire, "chat").text, "回复两个字：跳过");
+});
+
+test("turn: [billion-context] quoted mid-sentence stays user text", () => {
+  const wire = { tools: [{}], messages: [{ role: "user", content: "我说 [billion-context] 是个工具，帮我看看" }] };
+  assert.equal(lastUserText(wire, "chat").text, "我说 [billion-context] 是个工具，帮我看看");
+});
+
+test("turn: pure billion-context resume note is not user text", () => {
+  const wire = { tools: [{}], messages: [{ role: "user", content: "[billion-context] Continue now: state your final answer." }] };
+  assert.equal(lastUserText(wire, "chat"), undefined);
+});
