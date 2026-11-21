@@ -25,7 +25,20 @@ const DEFAULTS = {
 
 // design §4.6: same prompt retried by the agent within cacheTtlMs reuses the
 // previous optimization instead of burning another optimizer call.
-const cache = new Map();
+// Magpie's plugin-host is short-lived: it spawns per gateway run and exits
+// when idle (host exit on stdin close / pending==0), so a module-level Map
+// dies with it. Persist the small cache (orig-hash → {ts,out}) on disk next
+// to stats.ndjson and reload it on every onRequest — measured cost is one
+// small JSON read per request; entries expire by TTL on read.
+import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+const CACHE_FILE = new URL("./.cache.json", import.meta.url).pathname;
+const loadCache = () => {
+  try { return JSON.parse(readFileSync(CACHE_FILE, "utf8")); } catch { return {}; }
+};
+const saveCache = (m) => {
+  try { writeFileSync(CACHE_FILE, JSON.stringify(m)); } catch { /* best-effort */ }
+};
 // Key includes gatewayUrl + dryRun so tests (and mixed deployments) with
 // different backends never share entries; agent scoping is per design §4.6.
 const cacheKey = (agent, orig, gw, dry) => `${agent}|${gw}|${dry ? 1 : 0}|${orig}`;
@@ -142,7 +155,11 @@ export async function onRequest(body, ctx) {
     // design §4.6: agent retry of the same prompt within cacheTtlMs reuses the
     // previous optimization instead of burning another optimizer call.
     const ck = cacheKey((ctx && ctx.agent) || "", orig, o.gatewayUrl, o.dryRun);
-    const hit = cache.get(ck);
+    // short-lived host: load per request, hash the (long) key to keep the
+    // file small — collisions across sha256 keys are not a concern.
+    const ckHash = createHash("sha256").update(ck).digest("hex").slice(0, 24);
+    const diskCache = loadCache();
+    const hit = diskCache[ckHash];
     if (hit && Date.now() - hit.ts < (o.cacheTtlMs || 0)) {
       out = hit.out;
       fromCache = true;
@@ -161,7 +178,8 @@ export async function onRequest(body, ctx) {
       if (out.length < orig.length * 0.4 || out.length > maxOut || out.length > 6000)
         return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
       // only successful, guard-passing rewrites are cached
-      cache.set(ck, { ts: Date.now(), out });
+      diskCache[ckHash] = { ts: Date.now(), out };
+      saveCache(diskCache);
     }
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
