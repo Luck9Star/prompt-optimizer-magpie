@@ -44,7 +44,13 @@
           const s = window.magpie?.service;
           if (typeof s === "string" && /^https?:\/\//.test(s)) service = s;
         } catch { /* stay on defaults */ }
-        location.replace(service || `http://127.0.0.1:${port}/`);
+        // The sandbox page is served by the gateway (/_magpie/plugin/...), so
+        // its own hostname is the host the browser reached the UI on. Service
+        // binds 0.0.0.0 for LAN use (option bind), so same-host access works
+        // from any machine the UI is open on; 127.0.0.1 would point at the
+        // visitor's own machine instead.
+        const host = location.hostname || "127.0.0.1";
+        location.replace(service || `http://${host}:${port}/`);
         clearTimeout(timer);
       })();
     })();
