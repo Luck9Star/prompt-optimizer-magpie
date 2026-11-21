@@ -7,7 +7,7 @@ A self-contained [Magpie](https://usemagpie.ai) gateway request hook that rewrit
 ```
 user message ──▶ Magpie gateway ──▶ [this plugin's onRequest]
                                 ├─ 1. rule pre-filter (sync, zero cost)
-                                ├─ 2. decision gate (optional, /v1/systemone, 2s timeout)
+                                ├─ 2. decision gate (optional, /v1/systemone, 1.5s timeout)
                                 ├─ 3. optimize (/v1/chat/completions → group/prompt-optimize)
                                 └─ 4. replace the user's original text in the last user message, pass through
                                 ✗ any failure → pass through unchanged (fail-open, never blocks)

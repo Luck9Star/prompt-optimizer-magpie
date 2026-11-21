@@ -13,8 +13,9 @@ export default {
   server: async (_input, options) => {
     if (!started) {
       started = startStatsService({
-        // options.port: magpie.page.service.option "port" in package.json
-        port: Number(options?.port) || 3497,
+        // options.port: magpie.page.service.option "port" in package.json;
+        // 0 = ephemeral — `|| 3497` would silently swallow it.
+        port: Number.isFinite(Number(options?.port)) ? Number(options.port) : 3497,
       }).catch((error) => {
         started = null;
         throw error;

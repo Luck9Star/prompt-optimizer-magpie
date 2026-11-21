@@ -13,8 +13,11 @@ const DATA_DIR = process.env.POM_DATA_DIR || ROOT;
 const STATS = join(DATA_DIR, "stats"); // daily day-files (lib/stats.mjs)
 const SERVICE = join(DATA_DIR, "service.json");
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
-// 日志保留：默认 7 天；0/负数 = 永久保留。70 上部署目录大小可控。
-const RETAIN_DAYS = Number(process.env.POM_RETAIN_DAYS ?? 7) || 0;
+// 日志保留：默认 7 天；0/负数 = 显式永久保留。非法值（如 "14d"、空串）
+// 是配置手滑，静默归 0 会把清理关掉、磁盘无限涨——回退默认并打日志。
+const RAW_RETAIN = Number(process.env.POM_RETAIN_DAYS ?? 7);
+const RETAIN_DAYS = Number.isFinite(RAW_RETAIN) ? RAW_RETAIN : 7;
+if (!Number.isFinite(RAW_RETAIN)) console.warn(`serve: POM_RETAIN_DAYS="${process.env.POM_RETAIN_DAYS}" is not a number, falling back to ${RETAIN_DAYS}`);
 
 const server = makeStatsServer({ statsDir: STATS });
 // design §6: ephemeral (PORT=0) is the norm; a fixed PORT may hit EADDRINUSE —
@@ -23,7 +26,10 @@ const server = makeStatsServer({ statsDir: STATS });
 // hello.service-down path). Retry budget is shared across candidates so
 // systemd restarts never die on a lingering socket.
 const port = Number(process.env.PORT ?? 0);
-const FIXED_FALLBACK = [3497]; // hello.service-down fallback (design §6.2b)
+// hello.service-down fallback (design §6.2b). Overridable so tests can pick
+// a free port — hardcoding 3497 made the suite hang wherever magpie's own
+// plugin host holds it.
+const FIXED_FALLBACK = [Number(process.env.POM_FALLBACK_PORT ?? 3497)];
 const RETRIES_PER_CANDIDATE = 16;
 const RETRY_DELAY_MS = 100;
 const candidates = port === 0 ? [0] : [port, ...FIXED_FALLBACK.filter((p) => p !== port)];

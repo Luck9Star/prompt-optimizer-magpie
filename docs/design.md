@@ -184,7 +184,7 @@ onRequest(body, ctx)
 | 参数 | 值 | 依据 |
 |---|---|---|
 | `gatewayTimeoutMs`（hook 声明） | **25000** | 给 15s 优化 + 2s 决策 + 余量；不取满 30s，留网关调度空间 |
-| `deciderTimeoutMs` | 2000 | 决策就该快，慢了宁可直接走规则 |
+| `deciderTimeoutMs` | 1500 | 决策就该快，慢了宁可直接走规则 |
 | `optimizeTimeoutMs` | 15000 | flash 级 + 低思考档典型 3–8s，15s 是兜底不是常态 |
 
 残留风险（接受）：hook 等待期间客户端请求整体停顿（流未开始），最坏 +15s 首字延迟。缓解：dryRun 先跑统计真实延迟分布；模板选 flash 模型；`!!` 前缀手动逃生；`enabled:false` 一键关。
@@ -240,7 +240,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | `logText` | false | true 才把优化前后原文写入 ndjson。本机单用户可开，默认关 |
 | `skipToolless` | true | 无 tools 的请求直接放行 |
 | `cacheTtlMs` | 60000 | 相同 query 的优化结果缓存。0 = 关闭 |
-| `deciderTimeoutMs` | 2000 | |
+| `deciderTimeoutMs` | 1500 | |
 | `optimizeTimeoutMs` | 15000 | |
 | `port` | 0 | 0 = OS 自动分配；回退候选 3497 |
 | `bypassAgents` | [] | 出现新的机器客户端时按 ctx.agent 加白。OpenAI SDK 回调（agent="OpenAI"）实际请求 group/prompt-optimize，已被步骤 0 模型自环守卫覆盖，不需要默认值 |
@@ -282,6 +282,8 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | 拆两个 hook 插件换预算 | 链预算由"最长单 hook"主导，拆分不增加预算（见 §5） |
 
 ## 11. 实施路线
+
+> 注：本节为 v0.1 规划快照，文件清单已过时（v0.2 新增 serve.mjs / index.mjs / lib/stats-service.mjs / lib/turn.mjs / templates/ / page/ 等）；当前结构以 README「项目结构」为准。
 
 **v0.1（核心闭环，单提交）**
 

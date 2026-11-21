@@ -9,6 +9,24 @@ import { get, createServer } from "node:http";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
+
+// A free TCP port for tests — hardcoded 3497 hangs wherever magpie's plugin
+// host holds it (omp review [高-1]).
+async function freePort() {
+  const s = createServer();
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const { port } = s.address();
+  await new Promise((r) => s.close(r));
+  return port;
+}
+// Resolve when the child exits; guard against attaching after exit —
+// `on("exit")` on an already-dead process never fires (the old hang).
+function exited(child) {
+  return child.exitCode !== null || child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((r) => child.once("exit", r));
+}
+
 function once(port, path) {
   return new Promise((resolve, reject) => {
     get({ host: "127.0.0.1", port, path }, (res) => {
@@ -61,7 +79,7 @@ test("serve: service.json lifecycle + empty stats endpoints", async () => {
     assert.match(html.body, /<html/);
   } finally {
     child.kill("SIGTERM");
-    await new Promise((r) => (child.on("exit", r)));
+    await exited(child);
     assert.ok(!existsSync(serviceJson), "service.json cleaned up on exit");
   }
 });
@@ -96,18 +114,20 @@ test("serve: aggregation over known ndjson + corrupted line tolerance", async ()
     assert.equal(rec[1].reason, "bypass-prefix");
   } finally {
     child.kill("SIGTERM");
-    await new Promise((r) => (child.on("exit", r)));
+    await exited(child);
   }
 });
 
-// EADDRINUSE retry: an occupied fixed PORT falls back to candidate 3497,
-// stays up, and reports the actual bound port in service.json.
-test("serve: occupied fixed port retries then binds fallback 3497", async () => {
+// EADDRINUSE retry: an occupied fixed PORT falls back to the fallback port,
+// stays up, and reports the actual bound port in service.json. Both ports are
+// picked dynamically (env-overridable POM_FALLBACK_PORT) — never 3497.
+test("serve: occupied fixed port retries then binds fallback", async () => {
+  const [mainPort, fallbackPort] = await Promise.all([freePort(), freePort()]);
   const blocker = createServer(() => {});
-  await new Promise((r) => blocker.listen(3500, "127.0.0.1", r));
+  await new Promise((r) => blocker.listen(mainPort, "127.0.0.1", r));
   const dir = mkdtempSync(join(tmpdir(), "pom-serve-"));
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
-    env: { ...process.env, PORT: "3500", POM_DATA_DIR: dir },
+    env: { ...process.env, PORT: String(mainPort), POM_FALLBACK_PORT: String(fallbackPort), POM_DATA_DIR: dir, POM_RETAIN_DAYS: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -121,13 +141,13 @@ test("serve: occupied fixed port retries then binds fallback 3497", async () => 
       await new Promise((r) => setTimeout(r, 50));
     }
     const info = JSON.parse(readFileSync(serviceJson, "utf8"));
-    assert.equal(info.port, 3497, `expected fallback 3497, got ${info.port}; out=${out}`);
-    assert.ok(/retrying \(15 left\)/.test(out) && /port 3500 busy, trying 3497/.test(out), `retry+shift lines logged; out=${out}`);
+    assert.equal(info.port, fallbackPort, `expected fallback ${fallbackPort}, got ${info.port}; out=${out}`);
+    assert.ok(/retrying \(15 left\)/.test(out) && new RegExp(`port ${mainPort} busy, trying ${fallbackPort}`).test(out), `retry+shift lines logged; out=${out}`);
     const res = await once(info.port, "/api/stats");
     assert.equal(res.status, 200, "fallback port serves requests");
   } finally {
     child.kill("SIGTERM");
-    await new Promise((r) => child.on("exit", r));
+    await exited(child);
     await new Promise((r) => blocker.close(r));
     rmSync(dir, { recursive: true, force: true });
   }

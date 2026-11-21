@@ -7,7 +7,7 @@
 ```
 用户消息 ──▶ Magpie 网关 ──▶ [本插件 onRequest]
                           ├─ 1. 规则预过滤（同步，零成本）
-                          ├─ 2. 决策门禁（可选，/v1/systemone，2s 超时）
+                          ├─ 2. 决策门禁（可选，/v1/systemone，1.5s 超时）
                           ├─ 3. 优化改写（/v1/chat/completions → group/prompt-optimize）
                           └─ 4. 替换最后一条 user 消息中的用户原文，放行
                           ✗ 任何一步失败 → 原文放行（fail-open，绝不阻断请求）
