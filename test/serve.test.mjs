@@ -21,7 +21,9 @@ function once(port, path) {
 
 async function startServe(dataDir, port = 0) {
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
-    env: { ...process.env, PORT: String(port), POM_DATA_DIR: dataDir },
+    // POM_RETAIN_DAYS=0: startup prune off — fixture ts values are arbitrary;
+    // pruning itself is covered by the dedicated retain test below.
+    env: { ...process.env, PORT: String(port), POM_DATA_DIR: dataDir, POM_RETAIN_DAYS: "0" },
     stdio: "ignore",
   });
   const serviceJson = join(dataDir, "service.json");
@@ -126,6 +128,35 @@ test("serve: occupied fixed port retries then binds fallback 3497", async () => 
     child.kill("SIGTERM");
     await new Promise((r) => child.on("exit", r));
     await new Promise((r) => blocker.close(r));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("serve: startup prune honors POM_RETAIN_DAYS (7d default behavior)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pom-serve-prune-"));
+  const NOW = Date.now();
+  const lines = [
+    { ts: NOW - 8 * 86400_000, agent: "a", action: "pass", reason: "not-turn", durationMs: 1, inputChars: 0, outputChars: 0, dryRun: true },
+    { ts: NOW, agent: "a", action: "pass", reason: "not-turn", durationMs: 1, inputChars: 0, outputChars: 0, dryRun: true },
+  ];
+  writeFileSync(join(dir, "stats.ndjson"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
+    env: { ...process.env, PORT: "0", POM_DATA_DIR: dir }, // no POM_RETAIN_DAYS → default 7
+    stdio: "ignore",
+  });
+  const serviceJson = join(dir, "service.json");
+  const t0 = Date.now();
+  while (!existsSync(serviceJson)) {
+    if (Date.now() - t0 > 10000) throw new Error("service.json not written within 10s");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  try {
+    const { port } = JSON.parse(readFileSync(serviceJson, "utf8"));
+    const j = JSON.parse((await once(port, "/api/stats")).body);
+    assert.equal(j.total, 1, "8-day-old event pruned at startup, fresh kept");
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((r) => child.on("exit", r));
     rmSync(dir, { recursive: true, force: true });
   }
 });

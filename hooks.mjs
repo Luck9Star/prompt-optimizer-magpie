@@ -21,6 +21,10 @@ const DEFAULTS = {
   optimizeTimeoutMs: 15000,
   gatewayTimeoutMs: 25000,
   gatewayUrl: "http://127.0.0.1:3425",
+  // 日志分级：logSkips=false 不记常规 pass 事件（not-turn/self-loop 等噪音），
+  // 但失败类 reason 始终记录——排障时不能瞎。logOptimizes=false 不记 optimize/decide。
+  logSkips: true,
+  logOptimizes: true,
 };
 
 // design §4.6: same prompt retried by the agent within cacheTtlMs reuses the
@@ -70,6 +74,22 @@ export async function onRequest(body, ctx) {
   };
   const log = (action, reason, extra) => {
     const x = extra || {};
+    // 分级记录：pass 默认全记；logSkips=false 时只保留失败类 pass（error 及
+    // *-fail），optimize/decide 由 logOptimizes 控制。ctx.report 不受影响。
+    const isFailure = ["decider-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
+    if (action === "pass" && o.logSkips === false && !isFailure) {
+      if (typeof (ctx && ctx.report) === "function") {
+        try { ctx.report("skipped", 0); } catch { /* report must not break the request */ }
+      }
+      return;
+    }
+    if ((action === "optimize" || action === "decide") && o.logOptimizes === false) {
+      if (typeof (ctx && ctx.report) === "function") {
+        const code = reason === "optimized" || reason === "cache-hit" ? "ready" : "unavailable";
+        try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
+      }
+      return;
+    }
     record({
       agent: (ctx && ctx.agent) || "",
       action,

@@ -1,11 +1,13 @@
 // v0.2 local stats server (design.md §6). Node stdlib only, binds 127.0.0.1
 // only — origText clips of user prompts live in stats.ndjson, so never 0.0.0.0.
 // Reads stats.ndjson; never writes it. PORT env or POM_DATA_DIR override the
-// defaults so tests can run an isolated instance.
+// defaults so tests can run an isolated instance. Startup + daily prune keeps
+// stats.ndjson within RETAIN_DAYS (option retainDays / env POM_RETAIN_DAYS).
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prune } from "./lib/stats.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)));
 const DATA_DIR = process.env.POM_DATA_DIR || ROOT;
@@ -13,6 +15,8 @@ const STATS = join(DATA_DIR, "stats.ndjson");
 const SERVICE = join(DATA_DIR, "service.json");
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 const RECENT_DEFAULT = 50;
+// 日志保留：默认 7 天；0/负数 = 永久保留。70 上部署目录大小可控。
+const RETAIN_DAYS = Number(process.env.POM_RETAIN_DAYS ?? 7) || 0;
 
 function readEvents() {
   let raw;
@@ -159,6 +163,15 @@ server.on("error", (err) => {
   console.error(`serve: ${err.message}`);
   process.exit(1);
 });
+// prune at startup, then once a day (timer doesn't keep the loop alive —
+// serve's listening socket does). Result logged once for ops visibility.
+const pruned = prune(RETAIN_DAYS, Date.now(), STATS);
+if (pruned > 0) console.log(`serve: pruned ${pruned} stats events older than ${RETAIN_DAYS}d`);
+setInterval(() => {
+  const n = prune(RETAIN_DAYS, Date.now(), STATS);
+  if (n > 0) console.log(`serve: pruned ${n} stats events older than ${RETAIN_DAYS}d`);
+}, 86400_000).unref?.();
+
 tryListen();
 
 const shutdown = () => {

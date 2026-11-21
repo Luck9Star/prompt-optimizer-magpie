@@ -88,6 +88,15 @@ magpie plugin options prompt-optimizer-magpie '{
 | `gatewayUrl` | `http://127.0.0.1:3425` | 网关自环地址（决策 + 优化都回调网关） |
 | `logRewrites` | `true` | 审计日志是否记录改写原文（`orig`/`rewritten` 字段）；`false` 关闭，只记长度 |
 | `logRewriteChars` | `600` | 审计原文每字段截断长度，超出记 `…(+N chars)` |
+| `logSkips` | `true` | `false` 时不记录常规 `pass` 事件（not-turn / self-loop / no-tools 等噪音）；**失败类始终记录**（optimize-fail / decider-fail / optimize-empty / error），排障不瞎 |
+| `logOptimizes` | `true` | `false` 时不记录成功路径的 `optimize` / `decide` 事件（optimized / cache-hit / dry-run / followup 等）；失败类不受此开关影响 |
+
+## 日志保留（7 天清理）
+
+`stats.ndjson` 会无限增长。`serve.mjs` 启动时和每 24 小时执行一次 `prune`：删除 `ts` 早于 7 天前的行（temp 文件 + rename，崩溃不会截断日志；损坏行保留不删）。
+
+- 环境变量 `POM_RETAIN_DAYS`（默认 `7`）调整天数；`0` 或负数 = 永久保留。
+- systemd 部署示例：`Environment=POM_RETAIN_DAYS=7`。
 
 ## 输出护栏
 
