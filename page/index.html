@@ -1,7 +1,8 @@
 <!doctype html>
-<!-- Magpie plugin sandbox page (design.md §6): sandbox="allow-scripts", no
-     fetch/network. It only guides: discover service URL via the bridge when
-     available, else jump to the fixed fallback port, else show instructions. -->
+<!-- Magpie plugin sandbox page (design.md §6): sandbox="allow-scripts".
+     Logic lives in app.js — the sandbox CSP allows same-dir scripts but
+     blocks inline ones. app.js discovers the service URL via the bridge
+     (_magpie/bridge.js, served beside this page) and navigates there. -->
 <html lang="zh">
 <head>
   <meta charset="utf-8">
@@ -24,38 +25,6 @@
     <b>提示词优化统计</b>
     <div id="said">正在连接本地统计服务…</div>
   </div>
-  <script>
-    (() => {
-      const FALLBACK_PORT = 3497;
-      const said = document.getElementById("said");
-      // If the navigation target exists the frame is replaced and this timer
-      // never fires — it is purely the "service not running" hint.
-      const timer = setTimeout(() => {
-        said.textContent = "统计服务未启动：请在插件 options 设 port，或在插件目录运行 node serve.mjs。";
-      }, 2500);
-      (async () => {
-        let port = FALLBACK_PORT;
-        let service = "";
-        try {
-          // The bridge is served beside this page (_magpie/bridge.js): loading
-          // it answers magpie's hello handshake (the frame counts as alive)
-          // and yields the service URL through the gateway proxy — same
-          // origin as the UI, reachable from any machine the UI is open on.
-          await import("./_magpie/bridge.js");
-          await window.magpie?.ready; // bridge optional — page degrades without it
-          const opts = await window.magpie?.options?.get?.();
-          const v = Number(opts?.port);
-          if (Number.isInteger(v) && v > 0 && v < 65536) port = v;
-          const s = window.magpie?.service;
-          if (typeof s === "string" && /^https?:\/\//.test(s)) service = s;
-        } catch { /* stay on defaults */ }
-        // shortcut: service is always set when the bridge loaded; the
-        // host-based fallback covers bridge-less contexts (plain static serve)
-        const host = location.hostname || "127.0.0.1";
-        location.replace(service || `http://${host}:${port}/`);
-        clearTimeout(timer);
-      })();
-    })();
-  </script>
+  <script src="./app.js"></script>
 </body>
 </html>
