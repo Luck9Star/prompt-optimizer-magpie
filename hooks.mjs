@@ -45,6 +45,17 @@ const DEFAULTS = {
 // Render the single JSON interpolation without a Handlebars runtime.
 const MUSTACHE = /\{\{#helpers\.toJson\}\}\s*\{\{\{originalPrompt\}\}\}\s*\{\{\/helpers\.toJson\}\}/;
 
+function matchingOverride(rules, agent, model) {
+  if (!Array.isArray(rules)) return;
+  return rules.find(r => r && typeof r === "object"
+    && (r.agent !== undefined || r.model !== undefined)
+    && (r.agent === undefined || (typeof r.agent === "string" && r.agent.trim() && r.agent === agent))
+    && (r.model === undefined || (typeof r.model === "string" && r.model.trim() && r.model === model))
+    && (r.budgetMs !== undefined || r.optimizerMode !== undefined)
+    && (r.budgetMs === undefined || (Number.isSafeInteger(r.budgetMs) && r.budgetMs >= 0))
+    && (r.optimizerMode === undefined || ["auto", "merged"].includes(r.optimizerMode)));
+}
+
 export async function onRequest(body, ctx) {
   const t0 = Date.now();
   const o = { ...DEFAULTS, ...((ctx && ctx.options) || {}) };
@@ -119,6 +130,9 @@ export async function onRequest(body, ctx) {
     const input = { ...size, origText: orig };
     if (protocol === "responses" && body.previous_response_id) return pass("no-decider-followup", size);
     const thread = hasAssistantReply(body, protocol);
+    const override = matchingOverride(o.overrides, ctx?.agent, body.model);
+    if (!thread && override?.optimizerMode) o.optimizerMode = override.optimizerMode;
+    const remaining = () => override?.budgetMs === undefined ? Infinity : override.budgetMs - (Date.now() - t0);
     const assignment = assignRollout(o.rollout, ctx, thread);
     const desired = assignment.group === "baseline" ? o.optimizerMode : assignment.group;
     let mode = desired === "control" ? "direct" : desired === "merged" ? "merged" : o.deciderGroup ? "auto" : "rule";
@@ -127,12 +141,26 @@ export async function onRequest(body, ctx) {
       mode, fallbackFrom: "", fromCache: false, modelCalls: 0,
     };
     if (mode === "direct") return pass("experiment-control", size);
+    if (remaining() <= 0) return pass("budget-exhausted", size);
+    let budgetTimer = false;
+    const beginCall = (timeoutKey) => {
+      const left = remaining();
+      if (left <= 0) return false;
+      budgetTimer = Number.isFinite(left) && left <= o[timeoutKey];
+      if (budgetTimer) o[timeoutKey] = left;
+      summary.modelCalls++;
+      return true;
+    };
+    const expired = error => remaining() <= 0 || (budgetTimer && error?.name === "TimeoutError");
     let tier = "professional";
     let deciderFailed = false;
     if (mode === "auto") {
       let d;
-      summary.modelCalls++;
-      try { d = await decide(o, thread, orig); } catch {}
+      if (!beginCall("deciderTimeoutMs")) return pass("budget-exhausted", size);
+      try { d = await decide(o, thread, orig); } catch (error) {
+        if (expired(error)) return pass("budget-exhausted", size);
+      }
+      if (remaining() <= 0) return pass("budget-exhausted", size);
       if (!d) {
         if (thread) {
           log("decide", "decider-fail", input);
@@ -174,13 +202,16 @@ export async function onRequest(body, ctx) {
     const fromCache = out !== undefined;
     summary.fromCache = fromCache;
     if (!fromCache) {
-      summary.modelCalls++;
+      if (!beginCall("optimizeTimeoutMs")) return pass("budget-exhausted", size);
       if (mode === "merged") {
         let parsed;
         try {
           const raw = await completion(o, mergedSystemPrompt(langSuffix), orig);
           parsed = parseMerged(raw, langSuffix);
-        } catch {}
+        } catch (error) {
+          if (expired(error)) return pass("budget-exhausted", size);
+        }
+        if (remaining() <= 0) return pass("budget-exhausted", size);
         if (!parsed) {
           if (!breaker.until && ++breaker.failures >= 5) breaker.until = Date.now() + 600_000;
           return pass("merged-fail", input);
@@ -189,7 +220,10 @@ export async function onRequest(body, ctx) {
         if (parsed.passthrough) return pass("merged-passthrough", input);
         out = parsed.rest;
       } else {
-        try { out = await optimize(o, orig, templateId); } catch { return pass("optimize-fail", size); }
+        try { out = await optimize(o, orig, templateId); } catch (error) {
+          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", size);
+        }
+        if (remaining() <= 0) return pass("budget-exhausted", size);
         if (!out) return pass("optimize-empty", size);
         out = stripFence(out);
       }
@@ -204,6 +238,7 @@ export async function onRequest(body, ctx) {
       log("optimize", "no-span", audit);
       return finish("skipped", "no-span");
     }
+    if (remaining() <= 0) return pass("budget-exhausted", size);
     if (!fromCache) writeRewrite(o, key, out);
     const reason = fromCache ? "cache-hit" : o.dryRun ? "dry-run" : mode === "merged" ? "merged-optimized" : "optimized";
     log("optimize", reason, audit);

@@ -86,6 +86,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `skipToolless` | `true` | 无 tools 的请求直接放行（多为机器/闲聊调用） |
 | `optimizerMode` | `auto` | `merged` = 单次 optimize 调用同时完成「新任务判定 + 模板档位 + 改写」（首行 `[tpl:…]` / `[passthrough]` 标记协议）；`auto`（默认）= 现两段式 decider→optimize 不变 |
 | `rollout` | `null` | 首轮会话灰度，示例见下文 |
+| `overrides` | `[]` | 按顺序匹配第一条有效规则。可精确匹配 `agent`、目标 `model` 或两者；可设非负整数 `budgetMs`、首轮 `optimizerMode`，或两者 |
 | `deciderFallback` | `rule` | `auto` 模式下 decider 失败时的回落：`rule`（默认）纯规则路径；`merged` 转单次合并调用（熔断打开时退回 `rule`） |
 | `deciderTimeoutMs` | `1500` | 决策调用超时 |
 | `gatewayUrl` | `http://127.0.0.1:3425` | 网关自环地址（决策 + 优化都回调网关） |
@@ -120,6 +121,8 @@ magpie plugin options prompt-optimizer-magpie '{
 通过共同硬门的每个请求只写一条无正文的 `action=summary`。面板按实验、内容版本与组别统计样本量、实际回写率、放行原因、模型调用次数和 hook p95；旧日文件继续提供过程明细，不能补算请求分母。关闭过程日志仍保留摘要。盲评流程和离线样本见 [eval/README.md](eval/README.md)。
 
 仅为已确认 `ctx.session` 跨重试稳定的 agent 启用实验。例如 `"rollout":{"experimentId":"first-v1","agents":["codex"],"autoPercent":40,"mergedPercent":10}` 将其首轮分为 auto 40%、merged 10%、原文直通 50%。两比例之和必须小于 100。设 mergedPercent 为 0 可撤回该组且保留 auto 桶；设 rollout 为 null 恢复全局行为。未提供有效会话标识的请求走既有基线，在面板单计缺失数；线程或未列出的 agent 仍走全局配置。两种实验组继承 dryRun；要测实际回写需设 false。内容 SHA 同时标识摘要和精确缓存，模板、判定或合并协议更新后旧条目自然过期。
+
+例如 `"overrides":[{"agent":"cli","model":"group/interactive","budgetMs":350},{"agent":"batch","optimizerMode":"merged"}]`。350 毫秒从进入 hook 起算，判定和改写共用；耗尽时放行原文并记录 `budget-exhausted`，0 表示直接放行。目标模型匹配的是入站 `body.model`。实验组优先选择模式，预算仍生效；线程保留原有门禁。没有匹配项使用全局配置。
 
 钩子将审计事件写入插件目录 `stats/YYYY-MM-DD.ndjson`（UTC 日文件，按事件追加，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
 

@@ -42,6 +42,7 @@
       "optimizeGroup": "group/prompt-optimize",
       "optimizerMode": "auto",
       "rollout": null,
+      "overrides": [],
       "deciderFallback": "rule",
       "bypassPrefix": ["!!", "##"],
       "bypassModels": [],
