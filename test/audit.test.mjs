@@ -65,7 +65,17 @@ test("audit: logRewrites=false drops text fields but keeps counters", async () =
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "足够长的优化后提示词替换文本内容，超过原文长度" });
   try {
     await onRequest(singleUser("帮我把这个模糊的需求改写成具体提示词丙"), ctx(gw.url, { deciderGroup: "", dryRun: false, logRewrites: false }));
-    const ev = findMine("inputChars");
+    // needle can't be the (dropped) text — find OUR line structurally:
+    // optimized + inputChars 19 + no orig field (logRewrites=false).
+    const ev = (() => {
+      for (let i = 0; i < 40; i++) {
+        const rows = readFileSync(FILE, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+        const hit = rows.reverse().find((r) => r.agent === "t" && r.reason === "optimized" && r.inputChars === 19 && !("orig" in r));
+        if (hit) return hit;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+      throw new Error("stats line not found for logRewrites=false case");
+    })();
     assert.equal(ev.reason, "optimized");
     assert.equal("orig" in ev, false);
     assert.equal("rewritten" in ev, false);

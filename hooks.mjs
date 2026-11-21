@@ -87,6 +87,18 @@ export async function onRequest(body, ctx) {
     const lu = lastUserText(body, protocol);
     if (!lu) return pass("no-user-text");
     const orig = lu.text;
+    if (o.debugDump) {
+      // probe: dump body when user text extracted, for wire-layer triage
+      try {
+        const util = await import("node:util");
+        const inspect = (v) => util.inspect(v, { depth: 6, maxArrayLength: 10, maxStringLength: 600, breakLength: 200 });
+        const { appendFileSync: af } = await import("node:fs");
+        const { join } = await import("node:path");
+        const { dirname, fileURLToPath } = await import("node:url");
+        const p = typeof o.debugDump === "string" ? o.debugDump : join(dirname(fileURLToPath(import.meta.url)), "..", "debug-dump.log");
+        af(p, `=== ${new Date().toISOString()} agent=${ctx && ctx.agent} model=${body && body.model} proto=${protocol} origLen=${orig.length} ===\n${inspect(body)}\n\n`);
+      } catch {}
+    }
     if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length });

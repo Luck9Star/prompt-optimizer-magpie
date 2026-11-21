@@ -91,3 +91,19 @@ test("bypassAgents: listed agent passes before any gateway call", async () => {
     assert.equal(findMine("bypass-agent").reason, "bypass-agent");
   } finally { gw.close(); }
 });
+
+// debugDump probe: optional wire-layer dump for triage; off by default,
+// writes a header + inspected body when set.
+test("tier: debugDump writes a body dump when enabled", async () => {
+  const dump = new URL("../tmp-debugdump-test.log", import.meta.url).pathname;
+  const { rmSync, existsSync, readFileSync: rdf } = await import("node:fs");
+  rmSync(dump, { force: true });
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9, tpl: { choice: "basic", confidence: 0.9 } }, optimize: LONG });
+  try {
+    await onRequest(body1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: true, debugDump: dump }));
+    assert.ok(existsSync(dump), "dump file created");
+    const txt = rdf(dump, "utf8");
+    assert.ok(txt.includes("=== "), "header line present");
+    assert.ok(txt.includes("role: 'user'"), "body inspected");
+  } finally { gw.close(); rmSync(dump, { force: true }); }
+});

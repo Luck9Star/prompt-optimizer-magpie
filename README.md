@@ -79,6 +79,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `bypassModels` | `[]` | 命中这些 `body.model` 直接放行（排除机器任务模型，如 `group/bili-summary`） |
 | `bypassAgents` | `[]` | 命中这些 `ctx.agent` 直接放行（不想被优化的 agent 白名单，任何网关调用前拦截） |
 | `cacheTtlMs` | `60000` | 同 agent 同 prompt 在窗口内重试（agent 自动 retry）直接复用上次改写，不再打优化器；`0` 关闭 |
+| `debugDump` | `''` | 调试探针：设为文件路径时，每次候选请求 dump wire 层 body（util.inspect 截断）。看完就关——每请求追加，文件涨得快 |
 | `allowedOrigins` | `[]` | 非空时仅放行白名单内的 `ctx.origin`；origin 缺字段时 fail-open（不拦截） |
 | `skipToolless` | `true` | 无 tools 的请求直接放行（多为机器/闲聊调用） |
 | `deciderTimeoutMs` | `1500` | 决策调用超时 |
