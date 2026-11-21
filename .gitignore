@@ -5,3 +5,6 @@ stats/
 service.json
 .cache.json
 debug-dump.log
+
+.review-brief.md
+stats.ndjson.archived*
