@@ -86,4 +86,42 @@ test("log levels: logOptimizes=false suppresses success-path optimize/decide eve
   }
 });
 
+test("log levels: logOptimizes=false keeps decider-fail (failure survives the switch)", async () => {
+  const { onRequest } = await import("../hooks.mjs");
+  // dead gateway + live deciderGroup → decide() throws → decider-fail;
+  // README promises failures ignore logOptimizes — regression for the
+  // switch swallowing decide/decider-fail wholesale.
+  await onRequest({ tools: [{}], messages: [{ role: "user", content: "决策器失败时事件必须保留不得被降噪开关吞掉" }] },
+    { protocol: "chat", agent: "lv-dec-fail", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: "http://127.0.0.1:1" } });
+  const rows = await waitAgent("lv-dec-fail");
+  assert.ok(rows.some((r) => r.action === "decide" && r.reason === "decider-fail"),
+    "decider-fail must survive logOptimizes=false");
+});
+
+test("log levels: report codes unaffected by logOptimizes (followup→skipped, optimized→ready)", async () => {
+  const { onRequest } = await import("../hooks.mjs");
+  const { mockGateway } = await import("./helpers.gateway.mjs");
+  const gw = await mockGateway({ decider: { choice: "followup", confidence: 0.9 } });
+  try {
+    // suppressed decide/followup still reports "skipped" — the switch must
+    // not redefine ctx.report semantics (regression: used to send unavailable)
+    let codes = [];
+    await onRequest({ tools: [{}], messages: [{ role: "user", content: "追问不应上报 unavailable 语义验证" }] },
+      { protocol: "chat", agent: "lv-rep-code", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: gw.url, dryRun: false }, report: (c) => codes.push(c) });
+    assert.deepEqual(codes, ["skipped"], "suppressed followup reports skipped, not unavailable");
+    // suppressed successful optimize still reports "ready"
+    const gw2 = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "足够长的成功优化输出文本用于验证 ready 上报不被开关改变语义" });
+    try {
+      codes = [];
+      await onRequest({ tools: [{}], messages: [{ role: "user", content: "成功优化应上报 ready 的语义验证用例" }] },
+        { protocol: "chat", agent: "lv-rep-ready", kind: "", query: "", options: { logOptimizes: false, gatewayUrl: gw2.url, dryRun: false, deciderGroup: "" }, report: (c, b) => codes.push([c, b]) });
+      assert.equal(codes.length, 1);
+      assert.equal(codes[0][0], "ready");
+      assert.ok(codes[0][1] > 0);
+    } finally { gw2.close(); }
+  } finally {
+    gw.close();
+  }
+});
+
 test("teardown", () => rmSync(dir, { recursive: true, force: true }));

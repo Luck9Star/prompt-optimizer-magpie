@@ -77,15 +77,19 @@ export async function onRequest(body, ctx) {
     // 分级记录：pass 默认全记；logSkips=false 时只保留失败类 pass（error 及
     // *-fail），optimize/decide 由 logOptimizes 控制。ctx.report 不受影响。
     const isFailure = ["decider-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
+    // report 结果码统一映射：日志开关只影响 record，不得改变 ctx.report 语义。
+    const codeFor = () => (action === "optimize" && (reason === "optimized" || reason === "cache-hit")) ? "ready"
+      : isFailure ? "unavailable" : "skipped";
     if (action === "pass" && o.logSkips === false && !isFailure) {
       if (typeof (ctx && ctx.report) === "function") {
         try { ctx.report("skipped", 0); } catch { /* report must not break the request */ }
       }
       return;
     }
-    if ((action === "optimize" || action === "decide") && o.logOptimizes === false) {
+    // 失败类（decider-fail 等）不受 logOptimizes 抑制——排障线索优先于降噪。
+    if ((action === "optimize" || action === "decide") && o.logOptimizes === false && !isFailure) {
       if (typeof (ctx && ctx.report) === "function") {
-        const code = reason === "optimized" || reason === "cache-hit" ? "ready" : "unavailable";
+        const code = codeFor();
         try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
       }
       return;
@@ -106,9 +110,7 @@ export async function onRequest(body, ctx) {
     // unavailable (hook failed, fail-open passthrough) / skipped (gate pass).
     // Every exit path logs exactly once, so this reports exactly once too.
     if (typeof (ctx && ctx.report) === "function") {
-      const code = action === "optimize" && (reason === "optimized" || reason === "cache-hit") ? "ready"
-        : ["decider-fail", "optimize-fail", "optimize-empty", "error"].includes(reason) ? "unavailable"
-        : "skipped";
+      const code = codeFor();
       try { ctx.report(code, code === "ready" ? Buffer.byteLength(JSON.stringify(body ?? {})) : 0); } catch { /* report must not break the request */ }
     }
   };
