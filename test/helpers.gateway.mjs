@@ -15,7 +15,9 @@ export function mockGateway({ optimize = "ok", decider = { choice: "new_task", c
       res.setHeader("content-type", "application/json");
       if (req.url === "/v1/systemone") {
         res.statusCode = deciderStatus;
-        res.end(deciderRaw !== undefined ? deciderRaw : JSON.stringify({ answers: { noul: decider } }));
+        const answers = { noul: decider };
+        if (decider && decider.tpl) answers.tpl = decider.tpl;
+        res.end(deciderRaw !== undefined ? deciderRaw : JSON.stringify({ answers }));
       } else {
         res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: optimize } }] }));
       }

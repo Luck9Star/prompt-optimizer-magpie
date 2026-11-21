@@ -13,13 +13,22 @@ const DEFAULTS = {
   maxChars: 12000,
   bypassPrefix: ["!!", "##"],
   bypassModels: [],
+  bypassAgents: [],
   allowedOrigins: [],
   skipToolless: true,
+  cacheTtlMs: 60000,
   deciderTimeoutMs: 1500,
   optimizeTimeoutMs: 15000,
   gatewayTimeoutMs: 25000,
   gatewayUrl: "http://127.0.0.1:3425",
 };
+
+// design §4.6: same prompt retried by the agent within cacheTtlMs reuses the
+// previous optimization instead of burning another optimizer call.
+const cache = new Map();
+// Key includes gatewayUrl + dryRun so tests (and mixed deployments) with
+// different backends never share entries; agent scoping is per design §4.6.
+const cacheKey = (agent, orig, gw, dry) => `${agent}|${gw}|${dry ? 1 : 0}|${orig}`;
 
 // design §9: output-strategy injects style directives into every gateway
 // call — this tail note keeps the optimizer itself immune.
@@ -59,6 +68,7 @@ export async function onRequest(body, ctx) {
     if (o.enabled === false) return pass("disabled");
     if (ctx && ctx.kind === "subagent") return pass("subagent");
     if (body && (body.model === o.optimizeGroup || body.model === o.deciderGroup)) return pass("self-loop");
+    if (Array.isArray(o.bypassAgents) && ctx && o.bypassAgents.includes(ctx.agent)) return pass("bypass-agent");
     // Known machine-task models (Hermes compaction / title generation etc.)
     // also arrive with origin=local — origin alone cannot exclude them.
     if (Array.isArray(o.bypassModels) && body && o.bypassModels.includes(body.model)) return pass("bypass-model");
@@ -81,6 +91,7 @@ export async function onRequest(body, ctx) {
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length });
 
+    let tplChoice; // decider 的模板档位（skip/basic/professional/planning）
     if (o.deciderGroup) {
       let d;
       try {
@@ -100,6 +111,14 @@ export async function onRequest(body, ctx) {
         log("decide", "low-confidence", { in: orig.length, origText: orig });
         return undefined;
       }
+      // decider 同时给出模板档位（tpl question）：skip = 不优化的第三态
+      // （新任务但已结构化，改写无收益）。tpl 无效、缺失或置信度 <0.5 时
+      // 回退 professional（与上游默认一致），decider 部分故障不阻断优化链路。
+      const tplAns = d.tpl;
+      tplChoice = tplAns && ["skip", "basic", "professional", "planning"].includes(tplAns.choice) && typeof tplAns.confidence === "number" && tplAns.confidence >= 0.5
+        ? tplAns.choice
+        : undefined;
+      if (tplChoice === "skip") return pass("tpl-skip", { in: orig.length, origText: orig });
     } else if (hasAssistantReply(body, protocol)) {
       // 纯规则模式无法可靠区分新任务与长线程追问：有助手回复即保守放行
       // (design v4「长线程不开 decider = 全放行」)，只优化真正的首轮。
@@ -107,26 +126,37 @@ export async function onRequest(body, ctx) {
     }
 
     let out;
-    try {
-      out = await optimize(o, orig);
-    } catch {
-      return pass("optimize-fail", { in: orig.length });
+    let fromCache = false;
+    // design §4.6: agent retry of the same prompt within cacheTtlMs reuses the
+    // previous optimization instead of burning another optimizer call.
+    const ck = cacheKey((ctx && ctx.agent) || "", orig, o.gatewayUrl, o.dryRun);
+    const hit = cache.get(ck);
+    if (hit && Date.now() - hit.ts < (o.cacheTtlMs || 0)) {
+      out = hit.out;
+      fromCache = true;
+    } else {
+      try {
+        out = await optimize(o, orig, tplChoice);
+      } catch {
+        return pass("optimize-fail", { in: orig.length });
+      }
+      if (!out) return pass("optimize-empty", { in: orig.length });
+      out = stripFence(out);
+      // 上限取 max(3×原文, 1500)：短需求本就该展开成长结构化提示词（实测 17 字
+      // 需求 → 552 字提示词是期望效果），固定 3× 会误杀所有短输入；长输入仍受
+      // 3× 约束，6000 绝对上限兜底防异常膨胀。
+      const maxOut = Math.max(orig.length * 3, 1500);
+      if (out.length < orig.length * 0.4 || out.length > maxOut || out.length > 6000)
+        return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
+      // only successful, guard-passing rewrites are cached
+      cache.set(ck, { ts: Date.now(), out });
     }
-    if (!out) return pass("optimize-empty", { in: orig.length });
-    out = stripFence(out);
-    // 上限取 max(3×原文, 1500)：短需求本就该展开成长结构化提示词（实测 17 字
-    // 需求 → 552 字提示词是期望效果），固定 3× 会误杀所有短输入；长输入仍受
-    // 3× 约束，6000 绝对上限兜底防异常膨胀。
-    const maxOut = Math.max(orig.length * 3, 1500);
-    if (out.length < orig.length * 0.4 || out.length > maxOut || out.length > 6000)
-      return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
-
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
       log("optimize", "no-span", { in: orig.length, out: out.length, origText: orig, newText: out });
       return undefined;
     }
-    log("optimize", o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, origText: orig, newText: out });
+    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, origText: orig, newText: out });
     return o.dryRun ? undefined : newBody;
   } catch {
     return pass("error");
@@ -142,7 +172,7 @@ async function decide(o, body, protocol, orig) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model: o.deciderGroup,
-      state: { hasAssistantReply: hasAssistantReply(body, protocol), latestUserInput: orig },
+      state: { hasAssistantReply: hasAssistantReply(body, protocol), latestUserInput: orig, inputChars: orig.length },
       questions: {
         noul: {
           type: "choice",
@@ -150,7 +180,17 @@ async function decide(o, body, protocol, orig) {
             new_task: "开启新任务的指令性需求，改写可提升执行质量",
             followup: "对当前任务的追问/确认/补充/闲聊，或已自带充分结构与上下文的长文本——改写会破坏语境或收益为负",
           },
-          instructions: { type: "text", text: "判断 state.latestUserInput 属于哪一类。state.hasAssistantReply 表示会话中是否已有助手回复。" },
+          instructions: { type: "text", text: "判断 state.latestUserInput 属于哪一类。state.hasAssistantReply 表示会话中是否已有助手回复。判断依据：消息是否指向会话中已有的任务/产物/上下文（指代词、'刚才/继续/再'等），或其长度/结构已足够完整（state.inputChars 可参考）。拿不准时选 followup。" },
+        },
+        tpl: {
+          type: "choice",
+          criteria: {
+            skip: "输入已高度结构化：带标题/列表/分节、含明确指令或粘贴的代码/日志/文档——任何改写无收益或有破坏风险",
+            basic: "一句话日常需求：单一动作、无技术深度（如翻译、改写、简单查询），改写只需补全目标与格式",
+            professional: "专业技术/工程任务：有明确技术域（开发/运维/分析/写作等专业场景）、需要约束与验收标准",
+            planning: "复杂多步骤任务：含多个子目标、跨阶段依赖、或明说要计划/方案/路线图",
+          },
+          instructions: { type: "text", text: "判断 latestUserInput 的结构化程度与复杂度，四选一并给出置信度。判据：①出现分节/列表/代码块或字数占比高 → skip；②单一动作一句话、无技术深度 → basic；③专业域名词+约束条件、单一技术域就一件事 → professional；④多个子目标或'方案/计划/分阶段'字样 → planning。必须果断选择：置信度反映判据与输入的匹配强度，判据明确命中就给 0.8 以上；判据模糊时才给低置信度。state.inputChars 供参考。" },
         },
       },
     }),
@@ -159,7 +199,10 @@ async function decide(o, body, protocol, orig) {
   if (!res.ok) return undefined;
   const j = await res.json();
   const a = j && j.answers && j.answers.noul;
-  return a && typeof a.choice === "string" ? a : undefined;
+  if (!a || typeof a.choice !== "string") return undefined;
+  // Attach the template-tier answer when present; callers treat a missing or
+  // invalid tier as "fall back to language routing".
+  return { ...a, tpl: (j.answers.tpl && typeof j.answers.tpl.choice === "string") ? j.answers.tpl : undefined };
 }
 
 function hasAssistantReply(body, protocol) {
@@ -167,8 +210,15 @@ function hasAssistantReply(body, protocol) {
   return Array.isArray(arr) && arr.some((m) => m && (m.role === "assistant" || m.role === "model"));
 }
 
-async function optimize(o, orig) {
-  const tpl = getTemplate(cjkRatio(orig) >= 0.3 ? "professional" : "professional_en");
+async function optimize(o, orig, tplChoice) {
+  // Template selection: decider tier (basic/professional/planning) wins when
+  // valid; otherwise fall back to the language heuristic. English gets the
+  // professional_en variant of whatever tier was chosen.
+  const tier = ["basic", "professional", "planning"].includes(tplChoice) ? tplChoice : "professional";
+  const langSuffix = cjkRatio(orig) >= 0.3 ? "" : "_en";
+  const tpl = tier === "professional" || langSuffix
+    ? getTemplate(`${tier}${tier === "professional" ? langSuffix : ""}`) || getTemplate("professional" + langSuffix) || getTemplate(tier)
+    : getTemplate(tier);
   if (!tpl) return undefined;
   const user = MUSTACHE.test(tpl.user) ? tpl.user.replace(MUSTACHE, () => JSON.stringify(orig)) : `${tpl.user}\n\n${orig}`;
   const res = await fetch(`${o.gatewayUrl}/v1/chat/completions`, {
