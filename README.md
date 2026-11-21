@@ -116,6 +116,8 @@ magpie plugin options prompt-optimizer-magpie '{
 
 ## 统计与灰度
 
+通过共同硬门的每个请求只写一条无正文的 `action=summary`。面板按实验、内容版本与组别统计样本量、实际回写率、放行原因、模型调用次数和 hook p95；旧日文件继续提供过程明细，不能补算请求分母。关闭过程日志仍保留摘要。盲评流程和离线样本见 [eval/README.md](eval/README.md)。
+
 钩子将审计事件写入插件目录 `stats/YYYY-MM-DD.ndjson`（UTC 日文件，按事件追加，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
 
 决策失败后，已有助手回复的线程直接放行；首轮按实际降级路径记录 `decider-fail-rule` 或 `decider-fail-merged`。Responses 携带 `previous_response_id` 时直接放行。每个请求只上报一次终态；实际回写报 `ready` 并附返回请求体的 UTF-8 字节数，干跑或普通放行报 `skipped, 0`，最终模型调用失败报 `unavailable, 0`。

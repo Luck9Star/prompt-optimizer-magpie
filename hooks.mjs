@@ -71,14 +71,16 @@ export async function onRequest(body, ctx) {
       ...(o.logRewrites !== false && x.newText !== undefined && { rewritten: clip(x.newText) }),
     }, o.statsDir);
   };
-  const finish = (code, result) => {
+  let summary;
+  const finish = (code, reason, result, finalAction = result ? "apply" : "pass") => {
+    if (summary) record({ ...summary, action: "summary", reason, finalAction, durationMs: Date.now() - t0 }, o.statsDir);
     try { ctx?.report?.(code, result ? Buffer.byteLength(JSON.stringify(result)) : 0); } catch {}
     return result;
   };
   const pass = (reason, extra) => {
     log("pass", reason, extra);
     const unavailable = ["merged-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
-    return finish(unavailable ? "unavailable" : "skipped");
+    return finish(unavailable ? "unavailable" : "skipped", reason);
   };
   try {
     if (o.enabled === false) return pass("disabled");
@@ -120,10 +122,15 @@ export async function onRequest(body, ctx) {
     if (protocol === "responses" && body.previous_response_id) return pass("no-decider-followup", size);
     const thread = hasAssistantReply(body, protocol);
     let mode = o.optimizerMode === "merged" ? "merged" : o.deciderGroup ? "auto" : "rule";
+    summary = {
+      group: "baseline", experimentId: "", version: "", turn: thread ? "thread" : "first",
+      mode, fallbackFrom: "", fromCache: false, modelCalls: 0,
+    };
     let tier = "professional";
     let deciderFailed = false;
     if (mode === "auto") {
       let d;
+      summary.modelCalls++;
       try { d = await decide(o, thread, orig); } catch {}
       if (!d) {
         if (thread) {
@@ -131,12 +138,13 @@ export async function onRequest(body, ctx) {
           return pass("no-decider-followup", size);
         }
         deciderFailed = true;
-        mode = o.deciderFallback === "merged" ? "merged" : "rule";
+        summary.fallbackFrom = "auto";
+        summary.mode = mode = o.deciderFallback === "merged" ? "merged" : "rule";
       } else {
         if (d.choice !== "new_task" || !Number.isFinite(d.confidence) || d.confidence < 0.6) {
           const reason = d.choice === "new_task" ? "low-confidence" : d.choice === "followup" ? "followup" : redact(`choice:${d.choice}`);
           log("decide", reason, input);
-          return finish("skipped");
+          return finish("skipped", reason.startsWith("choice:") ? "unknown-choice" : reason);
         }
         if (typeof d.tpl?.confidence === "number" && d.tpl.confidence >= 0.5) {
           if (d.tpl.choice === "skip") return pass("tpl-skip", input);
@@ -152,7 +160,8 @@ export async function onRequest(body, ctx) {
       breaker = breakerFor(o);
       if (breaker.until) {
         log("pass", "merged-circuit-open", size);
-        mode = "rule";
+        summary.fallbackFrom = deciderFailed ? "auto/merged" : "merged";
+        summary.mode = mode = "rule";
       }
     }
     if (deciderFailed) log("decide", `decider-fail-${mode}`, input);
@@ -162,7 +171,9 @@ export async function onRequest(body, ctx) {
     const key = rewriteCacheKey(ctx?.agent || "", orig, o, mode, templateId);
     let out = readRewrite(o, key);
     const fromCache = out !== undefined;
+    summary.fromCache = fromCache;
     if (!fromCache) {
+      summary.modelCalls++;
       if (mode === "merged") {
         let parsed;
         try {
@@ -190,12 +201,12 @@ export async function onRequest(body, ctx) {
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
       log("optimize", "no-span", audit);
-      return finish("skipped");
+      return finish("skipped", "no-span");
     }
     if (!fromCache) writeRewrite(o, key, out);
     const reason = fromCache ? "cache-hit" : o.dryRun ? "dry-run" : mode === "merged" ? "merged-optimized" : "optimized";
     log("optimize", reason, audit);
-    return o.dryRun ? finish("skipped") : finish("ready", newBody);
+    return o.dryRun ? finish("skipped", reason, undefined, "dry-run") : finish("ready", reason, newBody);
   } catch {
     return pass("error");
   }

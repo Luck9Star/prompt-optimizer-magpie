@@ -102,6 +102,8 @@ Substitution touches only the **uniquely matched** user-text span in the last us
 
 ## Stats & rollout
 
+Each eligible request writes one text-free `action=summary` record, independently of detail logging. The dashboard groups sample counts, applied rewrites, pass reasons, model calls and hook p95 by experiment, content version and arm. Older day files contribute detail events only. See the [blind evaluation guide](eval/README.md) for offline samples.
+
 The hook appends audit events to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry redacted, clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error), `decide` (decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence), `optimize` (dry-run / optimized / merged-optimized / cache-hit / no-span).
 
 Retention: the active listener (embedded service or standalone daemon) prunes day files older than `POM_RETAIN_DAYS` (default `7`) at startup and every 24h; `0`/negative keeps everything. Installs that only use the in-app page never grow `stats/` unbounded either. The legacy single-file `stats.ndjson` is no longer read — archive it yourself if you want the history.

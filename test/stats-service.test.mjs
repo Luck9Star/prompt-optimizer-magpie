@@ -139,3 +139,39 @@ test("stats-service: IPv6 bind is probed on the same address; only the listener 
   }
   assert.deepEqual(clear.mock.calls.map((c) => c.arguments[0]), [add.mock.calls[0].result]);
 });
+
+test("stats-service: one denominator per experiment, version and arm; historical detail stays separate", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pom-summary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const detail = { ts: 4, action: "optimize", reason: "optimized", durationMs: 12 };
+  const summary = {
+    ts: 3, action: "summary", reason: "optimized", group: "baseline", experimentId: "", version: "",
+    mode: "auto", fallbackFrom: "", turn: "first", finalAction: "apply", fromCache: false, modelCalls: 2, durationMs: 10,
+  };
+  const rows = [
+    summary, detail, { ...summary, finalAction: "dry-run", durationMs: 20 },
+    { ...summary, finalAction: "pass", reason: "output-guard", modelCalls: 1, durationMs: 30 },
+    { ...summary, experimentId: "trial", version: "v1", group: "auto" },
+    { ...summary, experimentId: "trial", version: "v2", group: "auto" },
+    { ...summary, experimentId: "another", version: "v1", group: "auto" },
+    { ...summary, experimentId: "trial", version: "v1", group: "control", modelCalls: 0 },
+    { ...summary, finalAction: "unknown" }, { ...summary, modelCalls: null },
+  ];
+  writeFileSync(join(dir, "2026-01-01.ndjson"), rows.map((r) => JSON.stringify(r)).join("\n"));
+  const server = makeStatsServer({ statsDir: dir });
+  const stats = JSON.parse(request(server, "localhost", "/api/stats").body);
+  assert.equal(stats.total, 1);
+  assert.deepEqual(stats.actionCounts, { optimize: 1 });
+  assert.deepEqual(stats.reasonTop, { optimized: 1 });
+  assert.deepEqual(stats.optimizeDuration, { count: 1, p50: 12, p95: 12 });
+  assert.equal(stats.firstTs, detail.ts);
+  assert.equal(stats.lastTs, detail.ts);
+  assert.equal(stats.requestGroups.length, 5);
+  assert.deepEqual(stats.requestGroups[0], { group: "baseline", experimentId: "", version: "",
+    samples: 3, applied: 1, applyRate: 1/3, modelCalls: 5, p95Ms: 30, passReasons: { "output-guard": 1 } });
+  const html = request(server, "localhost", "/").body;
+  assert.match(html, /33\.3%/);
+  assert.match(html, /output-guard \(1\)/);
+  assert.match(html, /Recent 1 detailed events/);
+  assert.deepEqual(aggregate([detail]).requestGroups, []);
+});

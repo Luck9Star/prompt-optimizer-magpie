@@ -41,7 +41,15 @@ test("fallback shares the cache and reports only the final body, including threa
     assert.deepEqual(c.reports, [["skipped", 0]]);
     assert.deepEqual(calls, ["/v1/systemone", "/v1/chat/completions", "/v1/systemone", "/v1/systemone"]);
     const log = readFileSync(join(c.options.statsDir, new Date().toISOString().slice(0, 10) + ".ndjson"), "utf8");
-    assert.deepEqual(log.trim().split("\n").map(s => JSON.parse(s).reason), [
+    const rows = log.trim().split("\n").map(s => JSON.parse(s));
+    const summaries = rows.filter(r => r.action === "summary");
+    assert.deepEqual(summaries.map(r => [r.turn, r.mode, r.fallbackFrom, r.fromCache, r.modelCalls, r.finalAction]), [
+      ["first", "merged", "auto", false, 2, dryRun ? "dry-run" : "apply"],
+      ["first", "merged", "auto", true, 1, dryRun ? "dry-run" : "apply"],
+      ["thread", "auto", "", false, 1, "pass"],
+    ]);
+    assert.ok(summaries.every(r => !("orig" in r) && !("rewritten" in r)));
+    assert.deepEqual(rows.filter(r => r.action !== "summary").map(r => r.reason), [
       "decider-fail-merged", dryRun ? "dry-run" : "merged-optimized",
       "decider-fail-merged", "cache-hit", "decider-fail", "no-decider-followup",
     ]);
@@ -119,4 +127,21 @@ test("debugDump=true writes a redacted dump beside the installed hook", async t 
   const dump = readFileSync(join(c.options.statsDir, "debug-dump.log"), "utf8");
   assert.match(dump, /\[REDACTED\]/);
   assert.doesNotMatch(dump, /synthetic-private-value/);
+});
+
+test("only eligible requests emit a body-free summary even when audit details are disabled", async t => {
+  const c = context(t, { optimizerMode: "auto", logSkips: false, logOptimizes: false });
+  const fetch = t.mock.method(globalThis, "fetch", async () => ({
+    ok: true, json: async () => ({ answers: { noul: { choice: orig, confidence: 1 } } }),
+  }));
+  await onRequest({ messages: body.messages }, c);
+  await onRequest(body, c);
+  const line = readFileSync(join(c.options.statsDir, new Date().toISOString().slice(0, 10) + ".ndjson"), "utf8");
+  const event = JSON.parse(line);
+  assert.equal(event.action, "summary");
+  assert.equal(event.reason, "unknown-choice");
+  assert.equal(event.group, "baseline");
+  assert.equal(event.modelCalls, fetch.mock.callCount());
+  assert.equal(event.finalAction, "pass");
+  assert.ok(!line.includes(orig));
 });
