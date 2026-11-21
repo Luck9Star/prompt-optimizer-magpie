@@ -218,7 +218,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 
 | 层 | 机制 | 阶段 |
 |---|---|---|
-| 事件流水 | hook 写 `stats/YYYY-MM-DD.ndjson`（按 UTC 日分文件）：`{ts, agent, action, reason, durationMs, inputChars, outputChars, dryRun, fromCache?, orig?, rewritten?}`（orig/rewritten 为截断后的原文审计，logRewrites 可关）；action/reason ∈ pass（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、decide（decider-fail / decider-fail-rule / followup / low-confidence）、optimize（dry-run / optimized / cache-hit / no-span） | v0.1→v0.2 |
+| 事件流水 | hook 写 `stats/YYYY-MM-DD.ndjson`（按 UTC 日分文件）：`{ts, agent, action, reason, durationMs, inputChars, outputChars, dryRun, fromCache?, orig?, rewritten?}`（orig/rewritten 为截断后的原文审计，logRewrites 可关）；action/reason ∈ pass（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、decide（decider-fail / decider-fail-rule / followup / low-confidence）、optimize（dry-run / optimized / merged-optimized / cache-hit / no-span） | v0.1→v0.2 |
 | 结果码 | `ctx.report(code, bytes)` 上报固定结果码（不带用户正文） | v0.1 |
 | 日志 | 失败细节进 `~/Library/Logs/magpie/app.log`（`plugin [error]` 通道） | v0.1 |
 | token 成本 | 已有 page-usage-tree（优化调用按 `group/prompt-optimize` 入账）+ 内置 Usage 页 | 现成 |

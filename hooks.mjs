@@ -19,6 +19,12 @@ const DEFAULTS = {
   cacheTtlMs: 60000,
   deciderTimeoutMs: 1500,
   optimizeTimeoutMs: 15000,
+  // merged 模式：单次 optimize 调用同时完成模板选择 + 改写（首行标记协议）。
+  // optimizerMode: "auto"（默认，现行为）| "merged"（跳过 decider，首轮直接 merged）。
+  // deciderFallback: auto 模式下 decider 失败时的回落策略——本版实现 "merged"
+  // （失败请求转 merged 单次调用）；未实现值按纯规则回落处理。
+  optimizerMode: "auto",
+  deciderFallback: "rule",
   // gatewayTimeoutMs 有意不在 DEFAULTS：它是网关读取的声明（package.json
   // options / design §5），hook 代码自身从不消费——留在这里只会误导维护者。
   gatewayUrl: "http://127.0.0.1:3425",
@@ -81,7 +87,7 @@ export async function onRequest(body, ctx) {
     // *-fail），optimize/decide 由 logOptimizes 控制。ctx.report 不受影响。
     // decider-fail-rule 与 decider-fail 同为失败类：不受 logSkips/logOptimizes
     // 抑制（排障线索），report 映射 unavailable（decider 故障发生这一事实）。
-    const isFailure = ["decider-fail", "decider-fail-rule", "optimize-fail", "optimize-empty", "error"].includes(reason);
+    const isFailure = ["decider-fail", "decider-fail-rule", "merged-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
     // report 结果码统一映射：日志开关只影响 record，不得改变 ctx.report 语义。
     const codeFor = () => (action === "optimize" && (reason === "optimized" || reason === "cache-hit")) ? "ready"
       : isFailure ? "unavailable" : "skipped";
@@ -162,6 +168,18 @@ export async function onRequest(body, ctx) {
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length });
 
+    // merged 模式：单次调用完成「判定 + 模板选择 + 改写」。hasAssistantReply
+    // 仍是代码级硬门——线程一律放行，不交给模型判断（brief §实现约束）。
+    if (o.optimizerMode === "merged") {
+      if (hasAssistantReply(body, protocol)) return pass("no-decider-followup", { in: orig.length });
+      if (mergedBreakerOpen()) {
+        // 熔断打开：本次不再发起 merged，记事件后走纯规则（首轮 professional）
+        log("pass", "merged-circuit-open", { in: orig.length });
+      } else {
+        return runMerged(body, o, protocol, lu, orig, log);
+      }
+    }
+
     let tplChoice; // decider 的模板档位（skip/basic/professional/planning）
     if (o.deciderGroup) {
       let d;
@@ -171,10 +189,16 @@ export async function onRequest(body, ctx) {
         d = undefined; // timeout / network / parse — 宁漏勿误
       }
       if (!d) {
-        // decider 不可用（超时/网络/解析失败）→ 回落纯规则路径：首轮照常优化，
-        // 长线程保守放行，与 deciderGroup="" 的语义一致（decider 抖动期间插件
-        // 不整体失效）。reason 记 decider-fail-rule 与硬放行区分。
+        // decider 不可用（超时/网络/解析失败）→ 回落策略二选一：
+        // deciderFallback="merged" → 本次请求转 merged 单次调用（判定+改写
+        //   一次完成；熔断开启时退纯规则）。其余（默认 "rule"）→ 纯规则
+        // 路径：首轮照常 optimize，长线程保守放行，与 deciderGroup="" 语义
+        // 一致。reason 记 decider-fail-rule 与硬放行区分。
         log("decide", "decider-fail-rule", { in: orig.length, origText: orig });
+        if (o.deciderFallback === "merged") {
+          if (mergedBreakerOpen()) log("pass", "merged-circuit-open", { in: orig.length });
+          else return runMerged(body, o, protocol, lu, orig, log);
+        }
         if (hasAssistantReply(body, protocol)) return pass("no-decider-followup", { in: orig.length });
       } else if (d.choice !== "new_task") {
         log("decide", d.choice === "followup" ? "followup" : `choice:${d.choice}`, { in: orig.length, origText: orig });
@@ -327,6 +351,123 @@ const cjkRatio = (s) => ((s.match(/[㐀-鿿]/g) || []).length) / Math.max(s.leng
 function stripFence(s) {
   const m = s.trim().match(/^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n?```$/);
   return m ? m[1].trim() : s.trim();
+}
+
+// ── merged 模式（.merged-brief.md）────────────────────────────────────────
+// 单次 /v1/chat/completions 完成「新任务判定（noul 判据）+ 模板档位 + 改写」。
+// 输出协议：首行 [tpl:professional|basic|planning] 或 [passthrough]，正文随
+// 后。解析严格：首行不匹配 → merged-fail 放行（fail-open）。
+
+// 熔断：连续 5 次 merged-fail → 10 分钟内不再发起 merged，直接纯规则。
+// 内存态即可，进程重启清零（brief §14）。
+const MERGED_FAIL_THRESHOLD = 5;
+const MERGED_BREAKER_MS = 10 * 60 * 1000;
+let mergedFails = 0;
+let mergedBreakerUntil = 0;
+function mergedBreakerOpen() {
+  return Date.now() < mergedBreakerUntil;
+}
+
+// 首行标记解析：passthrough 或 { tier, rest }。只认首行；标记后允许直接
+// 结束（裸 [passthrough]）或换行接正文，其余一律 null（严格 fail-open）。
+const MERGED_TAG = /^\[(passthrough|tpl:(?:professional|basic|planning))\][ \t]*(?:\r?\n([\s\S]*))?$/;
+function parseMerged(s) {
+  const m = (s || "").trim().match(MERGED_TAG);
+  if (!m) return null;
+  return m[1] === "passthrough"
+    ? { passthrough: true }
+    : { passthrough: false, tier: m[1].slice(5), rest: (m[2] || "").trim() };
+}
+
+// merged 系统提示：复用 decide() 的 noul/tpl 判据文案 + 输出格式约定。
+// 中文模板体系；非中文输入靠系统指令锁定 professional 档 + 英文输出
+// （语言路由依赖上一批高-1 的选择式，但 merged 档位由模型自己选）。
+function mergedSystemPrompt(langSuffix) {
+  const noul = [
+    "【第一步：判定】若输入是「对当前任务的追问/确认/补充/闲聊，或已自带充分结构与上下文的长文本——改写会破坏语境或收益为负」，首行只输出 [passthrough]，任务结束。",
+    "若是「开启新任务的指令性需求，改写可提升执行质量」，进入第二步。",
+  ].join("\n");
+  const tpl = [
+    "【第二步：模板档位四选一】",
+    "- skip：输入已高度结构化（标题/列表/分节、明确指令、粘贴的代码/日志/文档）→ 回到 [passthrough]",
+    "- basic：一句话日常需求：单一动作、无技术深度（翻译/改写/简单查询），只需补全目标与格式",
+    "- professional：专业技术/工程任务：明确技术域（开发/运维/分析/写作），需要约束与验收标准",
+    "- planning：复杂多步骤任务：多个子目标、跨阶段依赖、或明说要计划/方案/路线图",
+  ].join("\n");
+  const fmt = [
+    "【第三步：改写】首行输出 [tpl:档位]（如 [tpl:professional]），第二行起输出按所选模板风格改写后的完整提示词。",
+    langSuffix === "_en"
+      ? "用户输入为非中文：档位一律选 professional，改写结果用英文输出。"
+      : "改写结果用中文输出。",
+    "首行必须是上述标记之一，不要输出任何其他前言或代码围栏。" + TAIL_NOTE,
+  ].join("\n");
+  return `你是提示词优化网关的合并决策改写器。\n\n${noul}\n\n${tpl}\n\n${fmt}`;
+}
+
+// merged 单次调用。返回 { passthrough } / { tier, rest } / { badProtocol }；
+// 抛错 = 网络/HTTP 层失败。merged user 消息拼接了 orig 原文，存在伪造标记
+// 风险——首行严格解析 + 输出侧护栏兜底，与 TAIL_NOTE 同威胁模型。
+async function mergedOptimize(o, orig) {
+  const langSuffix = cjkRatio(orig) >= 0.3 ? "" : "_en";
+  const res = await fetch(`${o.gatewayUrl}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: o.optimizeGroup,
+      stream: false,
+      messages: [
+        { role: "system", content: mergedSystemPrompt(langSuffix) },
+        { role: "user", content: orig },
+      ],
+    }),
+    signal: AbortSignal.timeout(o.optimizeTimeoutMs),
+  });
+  if (!res.ok) throw new Error(`merged http ${res.status}`);
+  const j = await res.json();
+  const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if (typeof c !== "string" || !c.trim()) throw new Error("merged empty");
+  const p = parseMerged(c);
+  return p || { badProtocol: true };
+}
+
+// merged 主路径：结果分流 + 复用既有 stripFence / output guard / replaceSpan。
+// log 是外层 onRequest 的闭包日志器，reason 码走全局 isFailure 表。
+async function runMerged(body, o, protocol, lu, orig, log) {
+  let m;
+  try {
+    m = await mergedOptimize(o, orig);
+  } catch {
+    mergedFails++;
+    if (mergedFails >= MERGED_FAIL_THRESHOLD) mergedBreakerUntil = Date.now() + MERGED_BREAKER_MS;
+    log("pass", "merged-fail", { in: orig.length });
+    return undefined;
+  }
+  if (m.badProtocol) {
+    mergedFails++;
+    if (mergedFails >= MERGED_FAIL_THRESHOLD) mergedBreakerUntil = Date.now() + MERGED_BREAKER_MS;
+    log("pass", "merged-fail", { in: orig.length, origText: orig });
+    return undefined;
+  }
+  mergedFails = 0; // 一次成功即复位连续失败计数
+  if (m.passthrough) {
+    // [passthrough] 不写缓存：判定随上下文变化，缓存判定会误伤后续追问
+    log("pass", "merged-passthrough", { in: orig.length });
+    return undefined;
+  }
+  let out = stripFence(m.rest);
+  // 标记本身不进入用户消息（replaceSpan 只替换 orig → out）
+  const maxOut = Math.min(Math.max(orig.length * 3, 1500), Math.max(6000, orig.length));
+  if (out.length < orig.length * 0.4 || out.length > maxOut) {
+    log("pass", "output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
+    return undefined;
+  }
+  const newBody = replaceSpan(body, protocol, lu.index, orig, out);
+  if (!newBody) {
+    log("pass", "no-span", { in: orig.length, out: out.length, origText: orig, newText: out });
+    return undefined;
+  }
+  log("optimize", o.dryRun ? "dry-run" : "merged-optimized", { in: orig.length, out: out.length, origText: orig, newText: out, outBody: newBody });
+  return o.dryRun ? undefined : newBody;
 }
 
 // Replace `orig` (the extracted text) with `out` inside message `index`,

@@ -79,8 +79,9 @@ magpie plugin options prompt-optimizer-magpie '{
 | `bypassModels` | `[]` | requests whose `body.model` matches pass through (machine-task models, e.g. `group/bili-summary`) |
 | `allowedOrigins` | `[]` | when non-empty, only these `ctx.origin` values pass; a missing origin is fail-open (not blocked) |
 | `skipToolless` | `true` | requests without tools pass through (mostly machine/chit-chat calls) |
+| `optimizerMode` | `auto` | `merged` = a single optimize call does new-task detection + template tier + rewrite (first-line `[tpl:…]` / `[passthrough]` marker protocol); `auto` (default) keeps the current two-stage decider→optimize flow |
+| `deciderFallback` | `rule` | fallback when the decider fails in `auto` mode: `rule` (default) = rules-only path; `merged` = reroute to the single merged call (drops back to `rule` while the breaker is open) |
 | `deciderTimeoutMs` | `1500` | decider call timeout |
-| `optimizeTimeoutMs` | `15000` | optimizer call timeout |
 | `gatewayTimeoutMs` | `25000` | **must be set explicitly** — per-hook budget, see above |
 | `gatewayUrl` | `http://127.0.0.1:3425` | gateway loopback address (decide + optimize both call back into the gateway) |
 | `logRewrites` / `logRewriteChars` | `true` / `600` | audit log carries clipped prompt text (`orig`/`rewritten`); `false` logs lengths only |
@@ -99,11 +100,13 @@ Substitution touches only the **uniquely matched** user-text span in the last us
 
 ## Stats & rollout
 
-Every pass through the hook appends one record to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error), `decide` (decider-fail / decider-fail-rule / followup / low-confidence), `optimize` (dry-run / optimized / no-span).
+Every pass through the hook appends one record to the daily file `stats/YYYY-MM-DD.ndjson` in the plugin directory (UTC, append-only, write failures are silent). By default `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` events carry clipped prompt text (`orig`/`rewritten`, 600 chars by default) so every rewrite can be audited at the plugin layer; set `logRewrites: false` to log lengths only. `action`/`reason` cover: `pass` (disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error), `decide` (decider-fail / decider-fail-rule / followup / low-confidence), `optimize` (dry-run / optimized / merged-optimized / no-span).
 
 Retention: the shared `startStatsService` (both entry points — the index.mjs in-app service and the serve.mjs daemon) prunes day files older than `POM_RETAIN_DAYS` (default `7`) at startup and every 24h; `0`/negative keeps everything. Installs that only use the in-app page never grow `stats/` unbounded either. The legacy single-file `stats.ndjson` is no longer read — archive it yourself if you want the history.
 
 `decider-fail-rule`: when the decision model is unavailable (timeout / network / parse failure) the hook no longer passes the whole request through — it falls back to the rules-only path (first turns still get optimized, threads pass conservatively, same semantics as `deciderGroup=""`), so a flapping decider never disables the plugin entirely.
+
+**merged-mode reasons**: `merged-optimized` (marker parsed + guardrails passed, rewrite applied); `merged-passthrough` (model judged the input a follow-up / already structured, passed verbatim, never cached); `merged-fail` (response missing a valid first-line marker, or network/HTTP failure — fail-open); `merged-circuit-open` (after 5 consecutive `merged-fail`s the breaker opens for 10 minutes — merged and the fallback entry route to the rules-only path while open; in-memory state, resets on process restart).
 
 Start with `dryRun: true` for a few days: a high `decider-fail` / `decider-fail-rule` rate means the decision service is unstable (on failure the hook falls back to rules-only behavior — threads pass, first turns still get optimized); if follow-ups get misclassified as `new_task` (watch `optimize/dry-run`), tune the decision criteria. Turn `dryRun: false` only once the false-positive rate looks right.
 
@@ -113,7 +116,7 @@ Start with `dryRun: true` for a few days: a high `decider-fail` / `decider-fail-
 node --test     # or npm test
 ```
 
-107 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, LAN bind, plus regressions for this round's review fixes (decider failure falls back to rules-only, output ceiling scales with original length, decider receives the user text, rules-only thread pass-through, output-guard short-input expansion).
+116 cases: four-protocol turn detection, gates, unique span matching, fail-open (decider 500 / decider timeout / optimize timeout / dead gateway / garbage JSON), stats, template tier + language selection, LAN bind, merged mode (single call / first-line marker protocol / [passthrough] never cached / circuit breaker / thread hard gate / decider fallback / default-behavior regression), plus the previous round's review-fix regressions.
 
 ## Template provenance & syncing
 

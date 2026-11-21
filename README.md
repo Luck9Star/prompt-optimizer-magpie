@@ -84,9 +84,9 @@ magpie plugin options prompt-optimizer-magpie '{
 | `debugDump` | `''` | 调试探针：设为文件路径时，每次候选请求 dump wire 层 body（util.inspect 截断）。看完就关——每请求追加，文件涨得快 |
 | `allowedOrigins` | `[]` | 非空时仅放行白名单内的 `ctx.origin`；origin 缺字段时 fail-open（不拦截） |
 | `skipToolless` | `true` | 无 tools 的请求直接放行（多为机器/闲聊调用） |
+| `optimizerMode` | `auto` | `merged` = 单次 optimize 调用同时完成「新任务判定 + 模板档位 + 改写」（首行 `[tpl:…]` / `[passthrough]` 标记协议）；`auto`（默认）= 现两段式 decider→optimize 不变 |
+| `deciderFallback` | `rule` | `auto` 模式下 decider 失败时的回落：`rule`（默认）纯规则路径；`merged` 转单次合并调用（熔断打开时退回 `rule`） |
 | `deciderTimeoutMs` | `1500` | 决策调用超时 |
-| `optimizeTimeoutMs` | `15000` | 优化调用超时 |
-| `gatewayTimeoutMs` | `25000` | **必须显式设置**的单 hook 预算，见上 |
 | `gatewayUrl` | `http://127.0.0.1:3425` | 网关自环地址（决策 + 优化都回调网关） |
 | `logRewrites` | `true` | 审计日志是否记录改写原文（`orig`/`rewritten` 字段）；`false` 关闭，只记长度 |
 | `logRewriteChars` | `600` | 审计原文每字段截断长度，超出记 `…(+N chars)` |
@@ -116,9 +116,11 @@ magpie plugin options prompt-optimizer-magpie '{
 
 ## 统计与灰度
 
-每次经过钩子都会向插件目录 `stats/YYYY-MM-DD.ndjson`（当日文件）追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / error）、`decide`（decider-fail / decider-fail-rule / followup / low-confidence）、`optimize`（dry-run / optimized / no-span）。
+每次经过钩子都会向插件目录 `stats/YYYY-MM-DD.ndjson`（当日文件）追加一条记录（append-only，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带截断后的原文（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / no-span）。
 
-`decider-fail-rule`：决策模型不可用（超时/网络/解析失败）时不再整条放行，而是回落纯规则路径——首轮照常优化，长线程保守放行（同 `deciderGroup=""` 语义），decider 抖动期间插件不整体失效。
+`decider-fail-rule`：决策模型不可用（超时/网络/解析失败）时不再整条放行，而是回落纯规则路径——首轮照常优化，长线程保守放行（同 `deciderGroup=""` 语义），decider 抖动期间插件不整体失效。`deciderFallback: "merged"` 时该回落升级为单次合并调用。
+
+**merged 模式 reason**：`merged-optimized`（标记解析成功 + 护栏通过，已替换）；`merged-passthrough`（模型判定追问/已结构化，原样放行，不写缓存）；`merged-fail`（响应不带合法首行标记，或网络/HTTP 失败——fail-open）；`merged-circuit-open`（连续 5 次 `merged-fail` 后熔断 10 分钟，期间 merged/降级入口直接走纯规则，内存态，进程重启清零）。
 
 建议先 `dryRun: true` 跑几天：若 `decider-fail` / `decider-fail-rule` 偏多说明决策服务不稳；若追问被误判为 `new_task` 偏多（看 `optimize/dry-run`），需调整决策 criteria。确认无误判后再 `dryRun: false`。
 
@@ -128,7 +130,7 @@ magpie plugin options prompt-optimizer-magpie '{
 node --test     # 或 npm test
 ```
 
-107 个用例：四协议 turn 判定、门禁、span 唯一匹配、fail-open（决策 500 / 决策超时 / 优化超时 / 死网关 / 垃圾 JSON）、统计、模板档位与语言选择、LAN bind、以及本轮评审修复的回归（决策失败回落纯规则、输出上限随原文长度、决策器收原文、纯规则长线程放行、output-guard 短输入展开）。
+116 个用例：四协议 turn 判定、门禁、span 唯一匹配、fail-open（决策 500 / 决策超时 / 优化超时 / 死网关 / 垃圾 JSON）、统计、模板档位与语言选择、LAN bind、merged 模式（单次调用 / 首行标记协议 / [passthrough] 不缓存 / 熔断 / 线程硬门 / decider 降级 / 缺省回归），以及上一轮评审修复的回归（决策失败回落纯规则、输出上限随原文长度、决策器收原文、纯规则长线程放行、output-guard 短输入展开）。
 
 ## 模板来源与同步
 
