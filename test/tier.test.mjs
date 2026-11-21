@@ -19,7 +19,7 @@ const findMine = (needle, tries = 40) => {
   }
   throw new Error("stats line not found for: " + needle);
 };
-const body1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个限流方案，要求支持动态阈值" }] };
+const body1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个限流方案，要求支持动态阈值乙" }] };
 const ctx = (url, opts) => ({ protocol: "chat", agent: "t", kind: "", query: "", options: { gatewayUrl: url, ...opts } });
 
 const LONG = "优化后的提示词内容，足够长以通过护栏长度检查要求。";
@@ -58,26 +58,32 @@ test("tier: invalid tpl choice falls back to professional", async () => {
 });
 
 test("cache: same prompt twice → second is cache-hit, one optimizer call", async () => {
+  const cf = new URL("../tmp-cache-tier1.json", import.meta.url).pathname;
+  const { rmSync } = await import("node:fs");
+  rmSync(cf, { force: true });
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9, tpl: { choice: "basic", confidence: 0.9 } }, optimize: LONG });
   try {
     const b1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个缓存策略方案，要支持失效穿透" }] };
-    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
-    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
+    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheFile: cf }));
+    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheFile: cf }));
     const opts = gw.seen.filter((r) => r.path === "/v1/chat/completions");
     assert.equal(opts.length, 1);
     assert.equal(findMine("失效穿透").reason, "cache-hit");
-  } finally { gw.close(); }
+  } finally { gw.close(); rmSync(cf, { force: true }); }
 });
 
 test("cache: cacheTtlMs=0 disables the cache", async () => {
+  const cf2 = new URL("../tmp-cache-tier2.json", import.meta.url).pathname;
+  const { rmSync } = await import("node:fs");
+  rmSync(cf2, { force: true });
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: LONG });
   try {
     const b1 = { tools: [{}], messages: [{ role: "user", content: "帮我设计一个零停机发布流程方案" }] };
-    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheTtlMs: 0 }));
-    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheTtlMs: 0 }));
+    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheTtlMs: 0, cacheFile: cf2 }));
+    await onRequest(b1, ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false, cacheTtlMs: 0, cacheFile: cf2 }));
     const opts = gw.seen.filter((r) => r.path === "/v1/chat/completions");
     assert.equal(opts.length, 2);
-  } finally { gw.close(); }
+  } finally { gw.close(); rmSync(cf2, { force: true }); }
 });
 
 test("bypassAgents: listed agent passes before any gateway call", async () => {

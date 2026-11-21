@@ -33,11 +33,11 @@ const DEFAULTS = {
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 const CACHE_FILE = new URL("./.cache.json", import.meta.url).pathname;
-const loadCache = () => {
-  try { return JSON.parse(readFileSync(CACHE_FILE, "utf8")); } catch { return {}; }
+const loadCache = (f) => {
+  try { return JSON.parse(readFileSync(f, "utf8")); } catch { return {}; }
 };
-const saveCache = (m) => {
-  try { writeFileSync(CACHE_FILE, JSON.stringify(m)); } catch { /* best-effort */ }
+const saveCache = (f, m) => {
+  try { writeFileSync(f, JSON.stringify(m)); } catch { /* best-effort */ }
 };
 // Key includes gatewayUrl + dryRun so tests (and mixed deployments) with
 // different backends never share entries; agent scoping is per design §4.6.
@@ -69,6 +69,7 @@ export async function onRequest(body, ctx) {
       inputChars: x.in || 0,
       outputChars: x.out || 0,
       dryRun: !!o.dryRun,
+      ...(x.markCache !== undefined ? { fromCache: !!x.markCache } : {}),
       ...(x.origText !== undefined && clip(x.origText) !== undefined ? { orig: clip(x.origText) } : {}),
       ...(x.newText !== undefined && clip(x.newText) !== undefined ? { rewritten: clip(x.newText) } : {}),
     });
@@ -158,7 +159,7 @@ export async function onRequest(body, ctx) {
     // short-lived host: load per request, hash the (long) key to keep the
     // file small — collisions across sha256 keys are not a concern.
     const ckHash = createHash("sha256").update(ck).digest("hex").slice(0, 24);
-    const diskCache = loadCache();
+    const diskCache = loadCache(o.cacheFile || CACHE_FILE);
     const hit = diskCache[ckHash];
     if (hit && Date.now() - hit.ts < (o.cacheTtlMs || 0)) {
       out = hit.out;
@@ -179,14 +180,14 @@ export async function onRequest(body, ctx) {
         return pass("output-guard", { in: orig.length, out: out.length, origText: orig, newText: out });
       // only successful, guard-passing rewrites are cached
       diskCache[ckHash] = { ts: Date.now(), out };
-      saveCache(diskCache);
+      saveCache(o.cacheFile || CACHE_FILE, diskCache);
     }
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
       log("optimize", "no-span", { in: orig.length, out: out.length, origText: orig, newText: out });
       return undefined;
     }
-    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, origText: orig, newText: out });
+    log("optimize", fromCache ? "cache-hit" : o.dryRun ? "dry-run" : "optimized", { in: orig.length, out: out.length, markCache: fromCache, origText: orig, newText: out });
     return o.dryRun ? undefined : newBody;
   } catch {
     return pass("error");
