@@ -2,10 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { get } from "node:http";
+import { get, createServer } from "node:http";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -94,5 +94,38 @@ test("serve: aggregation over known ndjson + corrupted line tolerance", async ()
   } finally {
     child.kill("SIGTERM");
     await new Promise((r) => (child.on("exit", r)));
+  }
+});
+
+// EADDRINUSE retry: an occupied fixed PORT falls back to candidate 3497,
+// stays up, and reports the actual bound port in service.json.
+test("serve: occupied fixed port retries then binds fallback 3497", async () => {
+  const blocker = createServer(() => {});
+  await new Promise((r) => blocker.listen(3500, "127.0.0.1", r));
+  const dir = mkdtempSync(join(tmpdir(), "pom-serve-"));
+  const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
+    env: { ...process.env, PORT: "3500", POM_DATA_DIR: dir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+  try {
+    const serviceJson = join(dir, "service.json");
+    const t0 = Date.now();
+    while (!existsSync(serviceJson)) {
+      if (Date.now() - t0 > 10000) throw new Error(`service.json not written; out=${out}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const info = JSON.parse(readFileSync(serviceJson, "utf8"));
+    assert.equal(info.port, 3497, `expected fallback 3497, got ${info.port}; out=${out}`);
+    assert.ok(/retrying \(1\/16\)/.test(out), "retry line logged");
+    const res = await once(info.port, "/api/stats");
+    assert.equal(res.status, 200, "fallback port serves requests");
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((r) => child.on("exit", r));
+    await new Promise((r) => blocker.close(r));
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -134,16 +134,32 @@ const server = createServer((req, res) => {
   return send(404, "not found", "text/plain");
 });
 
+// design §6: ephemeral (PORT=0) is the norm; a fixed PORT may hit EADDRINUSE —
+// retry the next candidates up to 16×100ms per page-usage-tree's pattern
+// before giving up, so systemd restarts don't die on a lingering socket.
 const port = Number(process.env.PORT ?? 0);
+const FIXED_FALLBACK = [3497]; // hello.service-down fallback (design §6.2b)
+let attempt = 0;
+const candidates = port === 0 ? [0] : [port, ...FIXED_FALLBACK.filter((p) => p !== port)];
+const tryListen = () => {
+  const p = candidates[Math.min(attempt, candidates.length - 1)];
+  server.listen(p, "127.0.0.1", () => {
+    const { port: bound } = server.address();
+    writeFileSync(SERVICE, JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2));
+    console.log(`serve: http://127.0.0.1:${bound}  (data: ${DATA_DIR})`);
+  });
+};
 server.on("error", (err) => {
+  if (err.code === "EADDRINUSE" && attempt < 16) {
+    attempt++;
+    console.error(`serve: ${err.message}, retrying (${attempt}/16)...`);
+    setTimeout(tryListen, 100);
+    return;
+  }
   console.error(`serve: ${err.message}`);
   process.exit(1);
 });
-server.listen(port, "127.0.0.1", () => {
-  const { port: bound } = server.address();
-  writeFileSync(SERVICE, JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2));
-  console.log(`serve: http://127.0.0.1:${bound}  (data: ${DATA_DIR})`);
-});
+tryListen();
 
 const shutdown = () => {
   try {
