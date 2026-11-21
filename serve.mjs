@@ -28,13 +28,15 @@ const RETRIES_PER_CANDIDATE = 16;
 const RETRY_DELAY_MS = 100;
 const candidates = port === 0 ? [0] : [port, ...FIXED_FALLBACK.filter((p) => p !== port)];
 let retriesLeft = RETRIES_PER_CANDIDATE;
-const tryListen = () => {
-  server.listen(candidates[0], "127.0.0.1", () => {
-    const { port: bound } = server.address();
-    writeFileSync(SERVICE, JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2));
-    console.log(`serve: http://127.0.0.1:${bound}  (data: ${DATA_DIR})`);
-  });
-};
+// Register the listening handler ONCE: listen(port, host, cb) adds cb as
+// another one-time 'listening' listener per retry attempt, so a bind that
+// succeeds after N retries would fire N callbacks (N service.json writes).
+server.on("listening", () => {
+  const { port: bound } = server.address();
+  writeFileSync(SERVICE, JSON.stringify({ port: bound, pid: process.pid, startedAt: Date.now(), version: VERSION }, null, 2));
+  console.log(`serve: http://127.0.0.1:${bound}  (data: ${DATA_DIR})`);
+});
+const tryListen = () => server.listen(candidates[0], "127.0.0.1");
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE" && retriesLeft > 0 && candidates.length > 0) {
     retriesLeft -= 1;
