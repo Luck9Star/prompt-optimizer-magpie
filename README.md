@@ -19,7 +19,7 @@
 
 - **零客户端配置**：装在 Magpie 网关，一次部署覆盖所有接入了网关的 agent CLI。
 - **只改「新任务」需求**：追问、确认、短消息、代码粘贴、超长结构化 prompt 一律放行——你不会在每次「继续」时浪费一次优化调用。决策模型会看到用户原文 + 是否已有助手回复，据此区分新任务与追问。
-- **双层门禁**：同步规则先拦掉大多数请求；拿不准的才走一次决策模型（System One）二分判断。`deciderGroup` 留空则纯规则运行——此时**长线程（已有助手回复）一律放行，只优化真正的首轮**。
+- **双层门禁**：同步规则先拦掉大多数请求；拿不准的才走一次决策模型（System One）二分判断。`deciderGroup` 留空则纯规则运行——此时**长线程（已有助手回复）一律放行，只优化真正的首轮**。决策模型一次调用同时回答两问：新任务/追问（`noul`）+ 模板档位（`tpl`：skip/basic/professional/planning）——`skip` 即「新任务但已结构化」的放行态；档位置信度 <0.5 或非法时回退 `professional`（与上游 prompt-optimizer 默认一致：模板列表首位）。
 - **机器调用排除**：`bypassModels` 可排除 Hermes 压缩 / 标题生成等机器任务模型（这些 origin 也是 local，单靠来源挡不住）；`ctx.kind==="subagent"` 子代理、自环模型（优化器/决策器自己的回源请求）自动跳过。
 - **fail-open**：决策超时、优化超时、返回异常、JSON 解析失败、span 匹配失败……一律原文放行。插件坏了 = 没装插件，不会弄坏你的网关。
 - **模型组外置**：优化模型、决策模型都在 Magpie 里配成 group，插件只写组名，换模型不动插件。
@@ -77,6 +77,8 @@ magpie plugin options prompt-optimizer-magpie '{
 | `minChars` / `maxChars` | `6` / `12000` | 用户原文长度窗口。`<minChars` 同步硬放行；`maxChars` 是防整本书粘贴的绝对上限，正常范围内的长文本交决策模型判断 |
 | `bypassPrefix` | `["!!", "##"]` | 用户原文以任一前缀开头则原样发送。**注意**：omp/pi 等 TUI 会把 `!!` 当 shell 转义吃掉，根本到不了网关，实际请用 `##`；支持字符串或数组 |
 | `bypassModels` | `[]` | 命中这些 `body.model` 直接放行（排除机器任务模型，如 `group/bili-summary`） |
+| `bypassAgents` | `[]` | 命中这些 `ctx.agent` 直接放行（不想被优化的 agent 白名单，任何网关调用前拦截） |
+| `cacheTtlMs` | `60000` | 同 agent 同 prompt 在窗口内重试（agent 自动 retry）直接复用上次改写，不再打优化器；`0` 关闭 |
 | `allowedOrigins` | `[]` | 非空时仅放行白名单内的 `ctx.origin`；origin 缺字段时 fail-open（不拦截） |
 | `skipToolless` | `true` | 无 tools 的请求直接放行（多为机器/闲聊调用） |
 | `deciderTimeoutMs` | `1500` | 决策调用超时 |
