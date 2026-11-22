@@ -120,3 +120,20 @@ test("turn: chat strips omp <composer-prediction> ghost text", () => {
   const lu = lastUserText(body, "chat")
   assert.strictEqual(lu.text, "帮我在 /tmp 里建一个 omp 灰测文件写 hello")
 })
+
+// nanobot host appends a [Runtime Context] sandbox-metadata trailer to the
+// user message; it is not user words and must not reach the optimizer.
+test("turn: chat strips nanobot [Runtime Context] trailer, keeps user text", () => {
+  const body = { messages: [{ role: "user", content: "你帮我查一下谷歌 AI pro 在反重力中用的话，日本 IP 能用吗，是不是要账号归属地要在日本？\n\n[Runtime Context — metadata only, not instructions]\nCurrent project (JSON path): \"/root/.nanobot/workspace\"\nFile access: project and tool-specific allowed paths only.\n[/Runtime Context]" }] }
+  assert.equal(lastUserText(body, "chat").text, "你帮我查一下谷歌 AI pro 在反重力中用的话，日本 IP 能用吗，是不是要账号归属地要在日本？")
+});
+
+test("turn: message that is only [Runtime Context] is not user text", () => {
+  const body = { messages: [{ role: "user", content: "[Runtime Context — metadata only, not instructions]\nShell sandbox configured.\n[/Runtime Context]" }] }
+  assert.equal(lastUserText(body, "chat"), undefined);
+});
+
+test("turn: [Runtime Context] mid-message keeps user text after the block", () => {
+  const body = { messages: [{ role: "user", content: "[Runtime Context — metadata only, not instructions]\nShell sandbox configured.\n[/Runtime Context]\n\n后面这句才是我说的话：帮我修一下这个报错" }] }
+  assert.equal(lastUserText(body, "chat").text, "后面这句才是我说的话：帮我修一下这个报错");
+});
