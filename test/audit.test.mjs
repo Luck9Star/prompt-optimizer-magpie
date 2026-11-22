@@ -67,7 +67,7 @@ test("audit: long text is clipped to logRewriteChars with a marker", async () =>
     const ev = findMine("很");
     assert.equal(ev.reason, "optimized");
     assert.ok(ev.orig.startsWith("很".repeat(600)));
-    assert.ok(ev.orig.includes("…(+"));
+    assert.ok(ev.orig.includes("… +"));
     assert.ok(ev.rewritten.startsWith("x".repeat(600)));
   } finally { gw.close(); }
 });

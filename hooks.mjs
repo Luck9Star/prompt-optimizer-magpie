@@ -62,7 +62,7 @@ export async function onRequest(body, ctx) {
   const clip = (text) => {
     const safe = redact(text);
     const n = o.logRewriteChars || 600;
-    return safe.length > n ? safe.slice(0, n) + `…(+${safe.length - n} chars)` : safe;
+    return safe.length > n ? safe.slice(0, n) + `… +${safe.length - n} chars` : safe;
   };
   const log = (action, reason, x = {}) => {
     const failed = reason.includes("-fail") || reason === "optimize-empty" || reason === "error";

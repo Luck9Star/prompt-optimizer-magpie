@@ -158,7 +158,7 @@ test("stats-page: page uses --magpie-* vars and no inline handlers; zero fetch/X
   assert.ok(!/on(click|load|error|change)=/i.test(html), "no inline handlers");
   assert.ok(!/fetch\(|XMLHttpRequest/i.test(html), "no fetch/XHR");
   const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(scripts, ["./lang.js"]);
+  assert.deepEqual(scripts, ["../bridge.js", "./lang.js"]);
   // form is GET, no JS needed
   assert.match(html, /<form class="filters" method="get">/);
 });
