@@ -29,7 +29,7 @@ test("stats-service: ephemeral bind serves / and /api/stats", async () => {
     const j = JSON.parse((await once(svc.port, "/api/stats")).body);
     assert.equal(j.total, 1);
     const html = await once(svc.port, "/");
-    assert.match(html.body, /prompt-optimizer-magpie · stats/);
+    assert.match(html.body, /提示词优化 · 统计/);
   } finally {
     await svc.close();
     rmSync(dir, { recursive: true, force: true });
@@ -172,7 +172,7 @@ test("stats-service: one denominator per experiment, version and arm; historical
   const html = request(server, "localhost", "/").body;
   assert.match(html, /33\.3%/);
   assert.match(html, /output-guard \(1\)/);
-  assert.match(html, /Recent 1 detailed events/);
+  assert.match(html, /事件明细/);
   assert.deepEqual(aggregate([detail]).requestGroups, []);
 });
 
@@ -185,7 +185,7 @@ test("session coverage counts eligible first turns across arms per experiment an
     { action: "optimize" }].map(overrides => ({ ...sample, ...overrides }));
   const empty = aggregate(excluded);
   assert.deepEqual(empty.sessionCoverage, []);
-  assert.match(renderPage(empty, []), /No eligible rollout requests/);
+  assert.match(renderPage(empty, []), /汇总表为空是预期行为/);
 
   const stats = aggregate([...excluded, sample, { ...sample, group: "control" },
     { ...sample, group: "baseline", assignment: "no-session" },
@@ -196,4 +196,5 @@ test("session coverage counts eligible first turns across arms per experiment an
     { experimentId: "A", version: "v2", total: 1, bucketed: 0, missingSessions: 1, rate: 0 },
   ]);
   assert.match(renderPage(stats, []), /2 \/ 3 \(66\.7%\)<\/td><td>1<\/td>/);
+  assert.match(renderPage(stats, [], { lang: "en" }), /2 \/ 3 \(66\.7%\)<\/td><td>1<\/td>/);
 });
