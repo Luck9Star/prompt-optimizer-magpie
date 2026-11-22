@@ -70,21 +70,21 @@ test("macfix 中-1: decider garbage JSON on a thread → conservative pass, no o
   } finally { gw.close(); }
 });
 
-test("macfix 中-2: orig > 6000 chars gets a ceiling above the fixed 6000", async () => {
-  const orig = "x".repeat(7000);
-  const out6k5 = "y".repeat(6500); // ceiling = max(6000, 7000) = 7000 → 6500 passes
-  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: out6k5 });
+test("macfix 中-2: long orig gets a ceiling that scales with orig units", async () => {
+  const orig = "词".repeat(700);   // 700 units → ceiling clamp(3500, 60, 2000) = 2000
+  const out1800 = "答".repeat(1800); // 1800 units, 2.6× orig → legal expansion
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: out1800 });
   try {
     const out = await onRequest(singleUser(orig), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
-    assert.ok(out, "6500-char rewrite accepted for 7000-char orig (old fixed 6000 cap would drop it)");
+    assert.ok(out, "1800-unit rewrite accepted for 700-unit orig (a fixed 60-unit cap would drop it)");
   } finally { gw.close(); }
 });
 
-test("macfix 中-2: short orig still capped at 6000", async () => {
-  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "y".repeat(7000) });
+test("macfix 中-2: short orig is capped at 5× its units", async () => {
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "答".repeat(700) });
   try {
-    const out = await onRequest(singleUser("x".repeat(2500)), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
-    assert.equal(out, undefined, "2500-char orig keeps the 6000 ceiling → 7000-char rewrite dropped");
+    const out = await onRequest(singleUser("词".repeat(100)), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
+    assert.equal(out, undefined, "100-unit orig → ceiling 500 units → 700-unit rewrite dropped");
   } finally { gw.close(); }
 });
 

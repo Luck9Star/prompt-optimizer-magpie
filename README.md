@@ -101,7 +101,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `logSkips` | `true` | `false` 时不记录常规 `pass` 事件（not-turn / self-loop / no-tools 等噪音）；**失败类始终记录**（optimize-fail / decider-fail / optimize-empty / error），排障不瞎 |
 | `logOptimizes` | `true` | `false` 时不记录成功路径的 `optimize` / `decide` 事件（optimized / cache-hit / dry-run / followup 等）；失败类不受此开关影响 |
 
-| `port` / `bind` | `0` / `127.0.0.1` | 统计服务监听：`port=0` OS 自动分配；`bind` 默认仅本机回环。**开 LAN 访问（如 `0.0.0.0`）= stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）对内网可见**，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
+| `port` / `bind` | `0` / `127.0.0.1` | 统计服务监听：`port=0` OS 自动分配（绑定后实际端口写入 `page/port.js`，页面自动发现，适合 in-app 页面）；固定端口默认 3497，**远程经 magpie web 访问时必须用固定端口**（宿主代理只认 manifest 端口）。`bind` 默认仅本机回环。**开 LAN 访问（如 `0.0.0.0`）= stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）对内网可见**，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
 
 ## 日志布局与保留（按天分文件，7 天清理）
 
@@ -113,12 +113,10 @@ magpie plugin options prompt-optimizer-magpie '{
 
 ## 输出护栏
 
-优化结果必须通过护栏才会被替换，否则原文放行：
-
-- 剥离外围代码围栏；新结果和缓存命中都逐字比对 `[REDACTED]`、双花括号占位符和反引号标识符的出现次数；
-- 长度下限 `0.4×` 原文（防止越改越短）；
-- 长度上限 `max(3×原文, 1500)`——短需求本就该展开成长结构化提示词（实测 17 字需求 → 552 字提示词是期望效果），固定 3× 会误杀所有短输入；
-- 绝对上限 `max(6000, 原文长度)`——上限随 `maxChars` 放行宽度联动，合法长输入不会「优化完再被固定 6000 丢弃」。
+- 剥离外围代码围栏；新结果和缓存命中都比对 `[REDACTED]`、双花括号占位符和反引号标识符的**数量**；字面比对容错等价写法（`{{ name }}` ≡ `{{name}}`，反引号 token 比内容），数量增减仍拦截；
+- 长度上下限按**词元数**而非字符数（中文 1 字 = 1 词元，连续英文单词/数字/标识符 = 1 词元，标点空白不计）：JS `.length` 按 UTF-16 code unit 计数，天然低估中文、高估英文，同一护栏对两种语言宽严不一；
+- 下限 `0.4×` 原文词元（防止越改越短）；上限 `clamp(5× 原文词元, 60, 2000)`——短需求给足结构化扩写空间（60 词元保底，实测 17 字需求 → 552 字提示词是期望效果），长输入最多扩 5 倍且封顶 2000 词元。生产事故驱动：182 字中文原文 → 612 字优质改写曾被字符级 ×3 上限误杀；
+- 护栏触发细分为三个 reason，统计页红色分组可观测：`output-guard-short`（低于下限）/ `output-guard-long`（超上限）/ `output-guard-tokens`（token 校验失败）。
 
 替换只动最后一条 user 消息中**唯一匹配**的用户原文 span：先逐字匹配，失败后空白规范化匹配；零命中或多重命中一律放行，绝不用 `ctx.query` 整段覆盖。
 
@@ -130,7 +128,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 例如 `"overrides":[{"agent":"cli","model":"group/interactive","budgetMs":350},{"agent":"batch","optimizerMode":"merged"}]`。350 毫秒从进入 hook 起算，判定和改写共用；耗尽时放行原文并记录 `budget-exhausted`，0 表示直接放行。目标模型匹配的是入站 `body.model`。实验组优先选择模式，预算仍生效；线程保留原有门禁。没有匹配项使用全局配置。
 
-钩子将审计事件写入插件目录 `stats/YYYY-MM-DD.ndjson`（UTC 日文件，按事件追加，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
+钩子将审计事件写入插件目录 `stats/YYYY-MM-DD.ndjson`（UTC 日文件，按事件追加，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard*` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard-short / output-guard-long / output-guard-tokens / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
 
 决策失败后，已有助手回复的线程直接放行；首轮按实际降级路径记录 `decider-fail-rule` 或 `decider-fail-merged`。Responses 携带 `previous_response_id` 时直接放行。每个请求只上报一次终态；实际回写报 `ready` 并附返回请求体的 UTF-8 字节数，干跑或普通放行报 `skipped, 0`，最终模型调用失败报 `unavailable, 0`。
 

@@ -87,20 +87,20 @@ test("v4: missing origin is fail-open even with an allow-list", async () => {
   } finally { gw.close(); }
 });
 
-test("v4: output guard lets a short prompt expand beyond 3x (up to 1500)", async () => {
-  const longOut = "优化后的详细结构化提示词。" + "补充细节。".repeat(90); // ~460字, 原文6字
+test("v4: output guard lets a short prompt expand up to the 60-unit floor", async () => {
+  const longOut = "优化后的详细结构化提示词：" + "补充细节。".repeat(9); // 55 units, orig 6 units
   const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: longOut });
   try {
     const out = await onRequest(singleUser("帮我设计限流"), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
-    assert.ok(out); // must NOT be killed by the 3x rule
-    assert.ok(out.messages[0].content.length > 400);
+    assert.ok(out); // 6-unit orig → ceiling floored at 60 units, structured expansion allowed
+    assert.equal(out.messages[0].content, longOut);
   } finally { gw.close(); }
 });
 
-test("v4: output guard still blocks absurd expansion (>6000)", async () => {
-  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "x".repeat(7000) });
+test("v4: output guard still blocks runaway expansion beyond the 2000-unit ceiling", async () => {
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "优".repeat(3000) });
   try {
     const out = await onRequest(singleUser("帮我设计限流"), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
-    assert.equal(out, undefined); // 6000 absolute ceiling
+    assert.equal(out, undefined); // 3000 units > clamp ceiling 2000
   } finally { gw.close(); }
 });

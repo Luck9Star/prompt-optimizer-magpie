@@ -59,16 +59,16 @@ test("audit: dry-run event records both texts too", async () => {
 
 test("audit: long text is clipped to logRewriteChars with a marker", async () => {
   const long = "很".repeat(3000);
-  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "x".repeat(4000) });
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "字".repeat(1500) });
   try {
-    // orig 3000 → out 4000: guard window [1200, max(6000, 3000)=6000] → passes;
+    // orig 3000 units (CJK) → out 1500 units: guard window [1200, 2000] → passes;
     // clipped at 600 chars with a …(+N chars) marker on both fields.
     await onRequest(singleUser(long), ctx(gw.url, { deciderGroup: "", dryRun: false }));
     const ev = findMine("很");
     assert.equal(ev.reason, "optimized");
     assert.ok(ev.orig.startsWith("很".repeat(600)));
     assert.ok(ev.orig.includes("… +"));
-    assert.ok(ev.rewritten.startsWith("x".repeat(600)));
+    assert.ok(ev.rewritten.startsWith("字".repeat(600)));
   } finally { gw.close(); }
 });
 

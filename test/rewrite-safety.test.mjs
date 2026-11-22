@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { onRequest } from '../hooks.mjs';
 import { readRewrite, rewriteCacheKey, writeRewrite } from '../lib/rewrite-cache.mjs';
-import { preservesTokens, redact } from '../lib/rewrite-guard.mjs';
+import { countUnits, preservesTokens, redact } from '../lib/rewrite-guard.mjs';
 
 function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), 'pom-rewrite-'));
@@ -16,13 +16,27 @@ const body = (content) => ({ tools: [{}], messages: [{ role: 'user', content }] 
 const request = (text, options) => onRequest(body(text), { protocol: 'chat', options });
 const completion = (content) => ({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) });
 
-test('guard compares the exact spelling and multiplicity of each protected token', () => {
+test('guard compares token multiplicity per category, tolerant of equivalent spelling', () => {
   const orig = 'Keep {{ name }}, `fieldId`, [REDACTED], {{ name }}';
-  assert.equal(preservesTokens(orig, 'Use [REDACTED] for {{ name }} and {{ name }} in `fieldId`.'), true);
-  for (const bad of [orig.replace('{{ name }}', ''), orig.replace(' name ', 'name'),
-    orig.replace('fieldId', 'fieldID'), orig.replace('[REDACTED]', 'hidden'), orig + ' `otherField`']) {
+  assert.equal(preservesTokens(orig, 'Use [REDACTED] for {{ name }} and {{name}} in `fieldId`.'), true);
+  // backtick token: same content, wider fence (``x`` vs `x`) is equivalent
+  assert.equal(preservesTokens('use `fieldId` here', 'use ``fieldId`` here'), true);
+  for (const bad of [orig.replace('{{ name }}', ''), orig.replace('[REDACTED]', 'hidden'), orig + ' `otherField`']) {
     assert.equal(preservesTokens(orig, bad), false);
   }
+});
+
+test('countUnits: CJK chars, word runs, mixed and empty strings', () => {
+  assert.equal(countUnits(''), 0);
+  assert.equal(countUnits('帮我把这个模糊的需求改写'), 12);        // pure CJK: 1 unit/char
+  assert.equal(countUnits('please fix this bug'), 4);            // words, punctuation/blank = 0
+  assert.equal(countUnits('user_id v2.1 是标识符'), 7);          // user_id + v2 + 是标识符(4)
+  // production incident 2026-11-22: 182-char CJK orig → 612-char rewrite, must pass
+  const orig = '帮我把这个模糊的需求改写成一条结构清晰、可直接执行的中文提示词，包含任务目标、输出格式、约束条件和验收标准。'.repeat(2);
+  const out = orig + '补充说明：首先梳理需求要点，其次给出分步执行计划，最后列出需要避免的常见坑与兜底方案，并按优先级排序所有待办事项以便逐项核对。'.repeat(2);
+  const origUnits = countUnits(orig), outUnits = countUnits(orig + out);
+  assert.ok(origUnits >= 90, `orig ≈ ${origUnits} units`);
+  assert.ok(outUnits >= origUnits * 0.4 && outUnits < Math.min(Math.max(origUnits * 5, 60), 2000), 'rewrite sits inside the guard window');
 });
 
 test('model and cached candidates both fail open when protected tokens change', async (t) => {
