@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, fmtDur, shortId, reasonGroup, ACTION_TAG, localStamp } from "../lib/stats-page.mjs";
+import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, fmtDur, shortId, reasonGroup, ACTION_TAG, localStamp, css } from "../lib/stats-page.mjs";
 import { aggregate } from "../lib/stats-service.mjs";
 
 const mk = (rows, day = "2026-01-01") => {
@@ -409,7 +409,7 @@ test("redesign C: focus-visible ring + spacing tokens present", () => {
   const dir = mk([ev()]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /:focus-visible \{\s*outline: 2px solid var\(--magpie-accent/);
+  assert.match(html, /:focus-visible \{\s*outline: 2px solid var\(--sem-accent/);
   assert.match(html, /a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible/);
   assert.match(html, /--space-1: \.25rem; --space-2: \.5rem; --space-3: 1rem; --space-4: 1\.5rem/);
   assert.match(html, /padding: var\(--space-4\) var\(--space-3\) 3rem/);
@@ -584,4 +584,17 @@ test("pct: max 分位数取桶内最大值", () => {
   const html = renderPage(agg, evs, { pct: "max" });
   assert.match(html, /<b class="v-green"[^>]*>9s<\/b>/);
   assert.match(html, />optimize max<\/span>/);
+});
+
+// dark theme regression (.omp-darkcolor-brief.md): tags used to fall back to
+// CanvasText (white-on-dark, all four semantic colors collapsed). css() must
+// define light-dark() pairs and sem tokens, and never fall back to CanvasText
+// for colored elements.
+test("stats-page: css uses light-dark() semantic tokens, no CanvasText color fallback", () => {
+  const s = css();
+  assert.match(s, /--sem-green:\s*var\(--magpie-green,\s*light-dark\(/);
+  assert.match(s, /light-dark\(var\(--green-l\),\s*var\(--green-d\)\)/);
+  for (const c of ["green", "amber", "red", "accent"]) assert.ok(s.includes(`--sem-${c}:`), `--sem-${c} defined`);
+  assert.ok(!/\.tag-\w+\s*\{[^}]*CanvasText/.test(s), "no CanvasText fallback in tag colors");
+  assert.match(s, /\.tag-green\s*\{\s*color:\s*var\(--sem-green\)/);
 });
