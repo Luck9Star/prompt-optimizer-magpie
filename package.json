@@ -78,7 +78,8 @@
       "bind": "127.0.0.1",
       "configPage": false,
       "minChars": 6,
-      "maxChars": 12000
+      "maxChars": 12000,
+      "guardRatioLimit": 10
     }
   },
   "engines": {

@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // merged 模式回归（.merged-brief.md §测试 1-8）：
 // 单次调用决策+模板+改写、首行标记协议严格解析、[passthrough] 不缓存、
 // 熔断 5 次/10 分钟、线程硬门、deciderFallback=merged 降级入口、缺省回归。
@@ -20,7 +21,7 @@ const threadBody = (text) => ({ tools: [{}], messages: [
 ] });
 const ORIG = "帮我把这个模糊的需求改写成具体的中文提示词描述";
 const REWRITE = "这是按照专业模板改写后的完整中文提示词内容，长度足够通过护栏检查要求。";
-const dayFile = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
+const dayFile = join(dir, localDay() + ".ndjson");
 const readEvents = () => { try { return readFileSync(dayFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.action !== "summary"); } catch { return []; } };
 const lastReason = (needle) => { const es = readEvents().filter((e) => JSON.stringify(e).includes(needle)); return es.length ? es[es.length - 1] : undefined; };
 

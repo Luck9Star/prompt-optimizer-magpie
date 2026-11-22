@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -41,7 +42,7 @@ test("fallback shares the cache and reports only the final body, including threa
     assert.equal(await onRequest(thread, c), undefined);
     assert.deepEqual(c.reports, [["skipped", 0]]);
     assert.deepEqual(calls, ["/v1/systemone", "/v1/chat/completions", "/v1/systemone", "/v1/systemone"]);
-    const log = readFileSync(join(c.options.statsDir, new Date().toISOString().slice(0, 10) + ".ndjson"), "utf8");
+    const log = readFileSync(join(c.options.statsDir, localDay() + ".ndjson"), "utf8");
     const rows = log.trim().split("\n").map(s => JSON.parse(s));
     const summaries = rows.filter(r => r.action === "summary");
     assert.deepEqual(summaries.map(r => [r.turn, r.mode, r.fallbackFrom, r.fromCache, r.modelCalls, r.finalAction]), [
@@ -137,7 +138,7 @@ test("only eligible requests emit a body-free summary even when audit details ar
   }));
   await onRequest({ messages: body.messages }, c);
   await onRequest(body, c);
-  const line = readFileSync(join(c.options.statsDir, new Date().toISOString().slice(0, 10) + ".ndjson"), "utf8");
+  const line = readFileSync(join(c.options.statsDir, localDay() + ".ndjson"), "utf8");
   const event = JSON.parse(line);
   assert.equal(event.action, "summary");
   assert.equal(event.reason, "unknown-choice");
@@ -170,7 +171,7 @@ test("rollout uses true passthrough, honors configured arms, and keeps missing s
   c.options.rollout = base;
   await onRequest(body, { ...c, session: "" });
   assert.equal(paths.length, 2);
-  const lines = readFileSync(join(c.options.statsDir, new Date().toISOString().slice(0, 10) + ".ndjson"), "utf8");
+  const lines = readFileSync(join(c.options.statsDir, localDay() + ".ndjson"), "utf8");
   assert.ok(!lines.includes("TEST-SESSION-"));
   const events = lines.trim().split("\n").map(s => JSON.parse(s)).filter(e => e.action === "summary");
   assert.deepEqual(events.map(e => [e.group, e.mode, e.modelCalls, e.finalAction]), [

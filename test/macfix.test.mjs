@@ -80,11 +80,11 @@ test("macfix 中-2: long orig gets a ceiling that scales with orig units", async
   } finally { gw.close(); }
 });
 
-test("macfix 中-2: short orig is capped at 5× its units", async () => {
-  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "答".repeat(700) });
+test("macfix 中-2: short orig ceiling is guardRatioLimit × its units (default x10)", async () => {
+  const gw = await mockGateway({ decider: { choice: "new_task", confidence: 0.9 }, optimize: "答".repeat(1100) });
   try {
     const out = await onRequest(singleUser("词".repeat(100)), ctx(gw.url, { deciderGroup: "group/route-decider", dryRun: false }));
-    assert.equal(out, undefined, "100-unit orig → ceiling 500 units → 700-unit rewrite dropped");
+    assert.equal(out, undefined, "100-unit orig → ceiling 1000 units → 1100-unit rewrite dropped");
   } finally { gw.close(); }
 });
 

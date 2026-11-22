@@ -83,6 +83,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `deciderGroup` | `group/route-decider` | 决策模型组；留空 `""` = 纯规则模式（长线程全放行，只优化首轮） |
 | `optimizeGroup` | `group/prompt-optimize` | 优化调用的模型组 |
 | `minChars` / `maxChars` | `6` / `12000` | 用户原文长度窗口。`<minChars` 同步硬放行；`maxChars` 是防整本书粘贴的绝对上限，正常范围内的长文本交决策模型判断 |
+| `guardRatioLimit` | `10` | 输出护栏上限倍率：改写词元数上限 `clamp(原文词元 × N, 60, 2000)`。默认 ×10（生产实测：52 词元原文的结构化改写 430 词元曾被 ×5 误杀）；配置页可改 |
 | `bypassPrefix` | `["!!", "##"]` | 用户原文以任一前缀开头则原样发送。**推荐用 `##`**：omp/pi 等 TUI 会把 `!!` 当 shell 转义吃掉，根本到不了网关；claude 类 TUI 也把 `!!` 当 bash 输入。`##` 在所有实测 agent 上都能原样到达（claude/grok 已验证 bypass-prefix） |
 | `bypassModels` | `[]` | 命中这些 `body.model` 直接放行（排除机器任务模型，如 `group/bili-summary`） |
 | `bypassAgents` | `[]` | 命中这些 `ctx.agent` 直接放行（不想被优化的 agent 白名单，任何网关调用前拦截） |
@@ -105,7 +106,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 ## 日志布局与保留（按天分文件，7 天清理）
 
-事件写在插件目录 `stats/` 下，**每天一个文件**（`stats/YYYY-MM-DD.ndjson`，UTC）。为什么不是单文件：`record()` 在 magpie plugin-host 进程里 append，而 `prune()` 在服务进程里执行——两个进程对同一个文件做「重写+rename」和「append」存在竞态（rename 瞬间落地的 append 会写进旧 inode 丢一条）。按天分文件后，保留策略变成 **unlink 整个过期日文件**，写者永远只 append 今天的文件，两边操作的 inode 不相交，竞态从结构上消除；单文件也不再无限增长，prune 从全量重写降为删文件。
+事件写在**包外用户配置区** `~/.config/magpie/prompt-optimizer-magpie/stats/`（`homedir()` 解析；Windows 同样落到 `~/.config/...`），**每天一个文件**（`YYYY-MM-DD.ndjson`，**本地时区**日界；页面时间戳同按本地时区渲染）。数据目录在包外，`magpie plugin update` 重装包目录不再丢数据；环境变量 `POM_STATS_DIR` 可显式覆盖。首次启动时若检测到包内旧 `stats/` 目录，会自动**复制**到新目录（同名文件跳过、不覆盖）并写入 `MIGRATED.txt` 标记，只迁一次。历史存量文件为 UTC 日命名，不重命名不合并——升级当天本地日与 UTC 日可能各有一个文件，属一次性过渡，读端按文件名分组不受影响。为什么不是单文件：`record()` 在 magpie plugin-host 进程里 append，而 `prune()` 在服务进程里执行——两个进程对同一个文件做「重写+rename」和「append」存在竞态（rename 瞬间落地的 append 会写进旧 inode 丢一条）。按天分文件后，保留策略变成 **unlink 整个过期日文件**，写者永远只 append 今天的文件，两边操作的 inode 不相交，竞态从结构上消除；单文件也不再无限增长，prune 从全量重写降为删文件。
 
 - `prune` 由共享的 `startStatsService` 在**两个入口**（index.mjs 宿主内服务 + serve.mjs daemon）启动时和每 24 小时执行：删除文件名日期早于 `POM_RETAIN_DAYS`（默认 `7`）的日文件；`0` 或负数 = 永久保留。只跑 in-app 页面、不部署 serve.mjs 的安装也会自动清理。
 - systemd 部署示例：`Environment=POM_RETAIN_DAYS=7`。
@@ -115,7 +116,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 - 剥离外围代码围栏；新结果和缓存命中都比对 `[REDACTED]`、双花括号占位符和反引号标识符的**数量**；字面比对容错等价写法（`{{ name }}` ≡ `{{name}}`，反引号 token 比内容），数量增减仍拦截；
 - 长度上下限按**词元数**而非字符数（中文 1 字 = 1 词元，连续英文单词/数字/标识符 = 1 词元，标点空白不计）：JS `.length` 按 UTF-16 code unit 计数，天然低估中文、高估英文，同一护栏对两种语言宽严不一；
-- 下限 `0.4×` 原文词元（防止越改越短）；上限 `clamp(5× 原文词元, 60, 2000)`——短需求给足结构化扩写空间（60 词元保底，实测 17 字需求 → 552 字提示词是期望效果），长输入最多扩 5 倍且封顶 2000 词元。生产事故驱动：182 字中文原文 → 612 字优质改写曾被字符级 ×3 上限误杀；
+- 下限 `0.4×` 原文词元（防止越改越短）；上限 `clamp(guardRatioLimit × 原文词元, 60, 2000)`，倍率默认 `10` 可配（配置页 `guardRatioLimit`）——短需求给足结构化扩写空间（60 词元保底，实测 17 字需求 → 552 字提示词是期望效果），长输入最多扩 N 倍且封顶 2000 词元。生产事故驱动：182 字中文原文 → 612 字优质改写曾被字符级 ×3 上限误杀；
 - 护栏触发细分为三个 reason，统计页红色分组可观测：`output-guard-short`（低于下限）/ `output-guard-long`（超上限）/ `output-guard-tokens`（token 校验失败）。
 
 替换只动最后一条 user 消息中**唯一匹配**的用户原文 span：先逐字匹配，失败后空白规范化匹配；零命中或多重命中一律放行，绝不用 `ctx.query` 整段覆盖。
@@ -128,7 +129,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 例如 `"overrides":[{"agent":"cli","model":"group/interactive","budgetMs":350},{"agent":"batch","optimizerMode":"merged"}]`。350 毫秒从进入 hook 起算，判定和改写共用；耗尽时放行原文并记录 `budget-exhausted`，0 表示直接放行。目标模型匹配的是入站 `body.model`。实验组优先选择模式，预算仍生效；线程保留原有门禁。没有匹配项使用全局配置。
 
-钩子将审计事件写入插件目录 `stats/YYYY-MM-DD.ndjson`（UTC 日文件，按事件追加，写失败静默）。默认在 `optimized` / `dry-run` / `output-guard*` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard-short / output-guard-long / output-guard-tokens / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
+钩子将审计事件写入 `~/.config/magpie/prompt-optimizer-magpie/stats/YYYY-MM-DD.ndjson`（本地时区日文件，按事件追加，写失败静默；数据目录在包外，update 不丢）。默认在 `optimized` / `dry-run` / `output-guard*` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard-short / output-guard-long / output-guard-tokens / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
 
 决策失败后，已有助手回复的线程直接放行；首轮按实际降级路径记录 `decider-fail-rule` 或 `decider-fail-merged`。Responses 携带 `previous_response_id` 时直接放行。每个请求只上报一次终态；实际回写报 `ready` 并附返回请求体的 UTF-8 字节数，干跑或普通放行报 `skipped, 0`，最终模型调用失败报 `unavailable, 0`。
 

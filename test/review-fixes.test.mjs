@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // Regression tests for the omp full-review findings (2026-11-21).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -50,7 +51,7 @@ test("stats retention: invalid values warn and use seven days; explicit opt-outs
   const dir = mkdtempSync(join(tmpdir(), "pom-retain-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const warn = t.mock.method(console, "warn", () => {});
-  const dayFile = (age) => join(dir, new Date(Date.now() - age * 86400_000).toISOString().slice(0, 10) + ".ndjson");
+  const dayFile = (age) => join(dir, localDay(new Date(Date.now() - age * 86400_000)) + ".ndjson");
   for (const value of ["", "  ", "abc", "1e300", "0", "-1"]) {
     const keep = Number(value) <= 0 && value.trim() !== "";
     writeFileSync(dayFile(8), "");
@@ -78,4 +79,13 @@ test("index.mjs server(): port 0 binds ephemeral, returns the actual port, page/
   assert.ok(Number.isInteger(out.port) && out.port >= 1 && out.port < 65536, `actual port returned: ${out.port}`);
   const page = readFileSync(new URL("../page/port.js", import.meta.url), "utf8");
   assert.match(page, new RegExp(`window\\.__POM_PORT__ = ${out.port};`));
+});
+
+test("page/app.js: __POM_PORT__ outranks bridge service URL and options.port", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../page/app.js", import.meta.url), "utf8");
+  // port.js loads first; bridge service / options.port only when no runtime port
+  assert.ok(src.indexOf('load("./port.js")') < src.indexOf('load("./_magpie/bridge.js")'), "port.js before bridge");
+  assert.match(src, /if \(!runtime\) \{/);
+  assert.match(src, /if \(!service && Number\.isInteger\(p\) && p > 0 && p < 65536\) port = p;/);
 });

@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -7,7 +8,7 @@ import { onRequest } from "../hooks.mjs";
 
 // tmp statsDir via options.statsDir — never touch the real stats/ dir.
 const dir = mkdtempSync(join(tmpdir(), "pom-stats-"));
-const FILE = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
+const FILE = join(dir, localDay() + ".ndjson");
 const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
 
 test("stats: events appended with required fields", async () => {
