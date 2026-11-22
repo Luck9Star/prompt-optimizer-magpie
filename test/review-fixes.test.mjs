@@ -79,3 +79,12 @@ test("index.mjs server(): port 0 binds ephemeral, returns the actual port, page/
   const page = readFileSync(new URL("../page/port.js", import.meta.url), "utf8");
   assert.match(page, new RegExp(`window\\.__POM_PORT__ = ${out.port};`));
 });
+
+test("page/app.js: __POM_PORT__ outranks bridge service URL and options.port", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../page/app.js", import.meta.url), "utf8");
+  // port.js loads first; bridge service / options.port only when no runtime port
+  assert.ok(src.indexOf('load("./port.js")') < src.indexOf('load("./_magpie/bridge.js")'), "port.js before bridge");
+  assert.match(src, /if \(!runtime\) \{/);
+  assert.match(src, /if \(!service && Number\.isInteger\(p\) && p > 0 && p < 65536\) port = p;/);
+});
