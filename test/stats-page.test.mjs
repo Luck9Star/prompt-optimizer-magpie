@@ -107,6 +107,25 @@ test("stats-page: renderPage filters show in table and dropdown options", () => 
   assert.match(html, /<option value="optimize"/);
 });
 
+// ── .omp-pass0-brief.md（pass 行 in/out 列显示「原样跳过/skipped as-is」） ──────
+test("pass0: pass 行 in/out 显示「原样跳过」而非 0/0；en 显示 skipped as-is；optimize 行保持数字", () => {
+  const dir = mk([ev({ action: "pass", reason: "not-turn", inputChars: 0, outputChars: 0 }), ev({ inputChars: 34, outputChars: 303 })]);
+  const evs = eventsByDay(dir);
+  const stats = aggregate(evs);
+  const zh = renderPage(stats, evs, {});
+  assert.match(zh, /<span class="skipped"><span data-lang="zh">原样跳过<\/span><span data-lang="en">skipped as-is<\/span><\/span>/);
+  assert.ok(!/<td>0\/0<\/td>/.test(zh), "no 0/0 cell on pass rows");
+  const en = renderPage(stats, evs, { lang: "en" });
+  assert.match(en, /data-lang="en">skipped as-is<\/span>/);
+  assert.ok(!/<td>0\/0<\/td>/.test(en));
+  // optimize 行照旧数字形态（fixture 34/303）
+  assert.match(zh, /<td>34\/303<\/td>/);
+  // decide 行不受影响（无 rewritten 仍显示数字）
+  const dir2 = mk([ev({ action: "decide", reason: "followup", inputChars: 12, outputChars: 0 })]);
+  const html2 = renderPage(aggregate(eventsByDay(dir2)), eventsByDay(dir2), {});
+  assert.match(html2, /<td>12\/0<\/td>/);
+});
+
 test("stats-page: pagination renders page 2 and next/prev links keep filters", () => {
   const rows = Array.from({ length: 60 }, (_, i) => ev({ reason: i < 30 ? "optimized" : "dry-run" }));
   const dir = mk(rows);
