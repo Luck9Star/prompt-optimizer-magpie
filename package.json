@@ -60,7 +60,8 @@
       "gatewayTimeoutMs": 25000,
       "gatewayUrl": "http://127.0.0.1:3425",
       "port": 0,
-      "bind": "127.0.0.1"
+      "bind": "127.0.0.1",
+      "configPage": false
     }
   },
   "engines": {

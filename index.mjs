@@ -21,6 +21,8 @@ export default {
         // options.bind: LAN opt-in ("0.0.0.0" / a NIC address). Default
         // 127.0.0.1 — stats day-files carry clipped prompt text.
         bind: typeof options?.bind === "string" && options.bind ? options.bind : "127.0.0.1",
+        // options.configPage: enable the /?page=config sub-page (default off).
+        options: { configPage: options?.configPage === true },
       }).catch((error) => {
         started = null;
         throw error;
