@@ -443,7 +443,7 @@ test("details A: fmtDur 自适应单位（ms→s，floor 一位小数，去尾�
 });
 
 test("details A: KPI p95 与详情页耗时人性化", () => {
-  const dir = mk([ev({ durationMs: 9499 })]);
+  const dir = mk([ev({ durationMs: 9499, optimizeMs: 9499 })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
   assert.match(html, /<b class="v-green"[^>]*>9\.4s<\/b>/);
@@ -488,37 +488,37 @@ test("details C: 模型组下拉注入 providers.json groups；缺失静默降�
 // ── .omp-kpi-brief.md / .omp-pct-brief.md ────────────────────────────────────
 test("KPI: 卡渲染（总数 + decide/optimize/pass 各一张，随 pct 取值）+ title 口径", () => {
   const dir = mk([
-    ev({ action: "decide", reason: "new-task", durationMs: 1200 }),
-    ev({ action: "decide", reason: "new-task", durationMs: 2400 }),
-    ev({ durationMs: 300 }),
-    ev({ action: "pass", reason: "not-turn", durationMs: 1 }),
+    ev({ action: "decide", reason: "new-task", durationMs: 1200, decideMs: 1200 }),
+    ev({ action: "decide", reason: "new-task", durationMs: 2400, decideMs: 2400 }),
+    ev({ durationMs: 300, optimizeMs: 300 }),
+    ev({ action: "pass", reason: "not-turn", durationMs: 1 }), // no stage fields → no bucket
   ]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.equal((html.match(/class="kpi"/g) || []).length, 4, "total + one card per action");
+  assert.equal((html.match(/class="kpi"/g) || []).length, 3, "total + decide + optimize only");
   assert.match(html, /<b class="v-amber"[^>]*>2\.4s<\/b>/); // decide p95 default
   assert.match(html, /<b class="v-green"[^>]*>300ms<\/b>/);
-  assert.match(html, /<b class="v-muted"[^>]*>1ms<\/b>/);
   assert.match(html, /<b>4<\/b>/, "total card keeps default color");
-  assert.match(html, /title="decide 耗时 p95：仅 action=decide 事件的 durationMs 分布"/);
+  assert.match(html, /title="判定耗时 p95：仅真实调用模型的事件（n=2）"/);
+  assert.match(html, /title="改写耗时 p95：仅真实调用模型的事件（n=1）"/);
   assert.match(html, />decide p95<\/span>/);
-  assert.match(html, />pass p95</);
+  assert.ok(!/pass p95/.test(html), "pass card gone");
 });
 
 test("KPI: 无该 action 数据时显示 —", () => {
-  const dir = mk([ev({ durationMs: 500 })]); // only optimize
+  const dir = mk([ev({ durationMs: 500, optimizeMs: 500 })]); // only optimize
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
   assert.match(html, /<b class="v-amber"[^>]*>–<\/b>/); // decide dash
   assert.equal((html.match(/v-amber[^>]*>–/g) || []).length, 1);
-  assert.match(html, /<b class="v-muted"[^>]*>–<\/b>/); // pass dash
   assert.match(html, /<b class="v-green"[^>]*>500ms<\/b>/);
+  assert.match(html, /title="判定耗时 p95：仅真实调用模型的事件（n=0）"/);
 });
 
 test("KPI: percentile 正确性（按 action 分桶）", () => {
   const dir = mk([
-    ...[100, 200, 300, 400, 5000].map((d) => ev({ durationMs: d })),       // optimize
-    ...[10, 20, 30].map((d) => ev({ action: "decide", reason: "new-task", durationMs: d })),
+    ...[100, 200, 300, 400, 5000].map((d) => ev({ durationMs: d, optimizeMs: d })),       // optimize
+    ...[10, 20, 30].map((d) => ev({ action: "decide", reason: "new-task", durationMs: d, decideMs: d })),
   ]);
   const evs = eventsByDay(dir);
   const agg = aggregate(evs);
@@ -526,8 +526,7 @@ test("KPI: percentile 正确性（按 action 分桶）", () => {
   assert.equal(agg.actionDuration.optimize.p50, 300); // ceil(0.5*5)-1 = index 2
   assert.equal(agg.actionDuration.decide.p50, 20);
   assert.equal(agg.actionDuration.decide.p95, 30);
-  assert.equal(agg.actionDuration.pass.count, 0);
-  assert.equal(agg.actionDuration.pass.p95, null);
+  assert.equal(agg.actionDuration.pass, undefined); // pass bucket removed entirely
   // 兼容别名：optimizeDuration = actionDuration.optimize
   assert.equal(agg.optimizeDuration.p95, 5000);
 });
@@ -535,20 +534,19 @@ test("KPI: percentile 正确性（按 action 分桶）", () => {
 // ── .omp-pct-brief.md: 切换器 + 贯通 ─────────────────────────────────────────
 test("pct: ?pct=p99 取 p99 值与 label；非法 pct 回落 p95", () => {
   const dir = mk([
-    ev({ durationMs: 100 }),
-    ev({ durationMs: 200 }),
-    ev({ durationMs: 300 }),
-    ev({ durationMs: 400 }),
-    ev({ durationMs: 5000 }),
-    ev({ action: "decide", reason: "new-task", durationMs: 42 }),
+    ev({ durationMs: 100, optimizeMs: 100 }),
+    ev({ durationMs: 200, optimizeMs: 200 }),
+    ev({ durationMs: 300, optimizeMs: 300 }),
+    ev({ durationMs: 400, optimizeMs: 400 }),
+    ev({ durationMs: 5000, optimizeMs: 5000 }),
+    ev({ action: "decide", reason: "new-task", durationMs: 42, decideMs: 42 }),
   ]);
   const evs = eventsByDay(dir);
   const p99 = renderPage(aggregate(evs), evs, { pct: "p99" });
   // ceil(0.99*5)-1 = index 4 → 5000; decide p99 = 42
   assert.match(p99, /<b class="v-green"[^>]*>5s<\/b>/);
   assert.match(p99, /<b class="v-amber"[^>]*>42ms<\/b>/);
-  assert.match(p99, />optimize p99<\/span>/);
-  assert.match(p99, /title="decide 耗时 p99：仅 action=decide 事件的 durationMs 分布"/);
+  assert.match(p99, /title="判定耗时 p99：仅真实调用模型的事件（n=1）"/);
   // invalid falls back to p95 (ceil(0.95*5)-1 = 4 → 5000 too, so use label to distinguish)
   const bad = renderPage(aggregate(evs), evs, { pct: "p42" });
   assert.match(bad, />optimize p95<\/span>/);
@@ -578,7 +576,7 @@ test("pct: 翻页与详情返回链接携带 pct", () => {
 });
 
 test("pct: max 分位数取桶内最大值", () => {
-  const dir = mk([ev({ durationMs: 100 }), ev({ durationMs: 9000 }), ev({ durationMs: 500 })]);
+  const dir = mk([ev({ durationMs: 100, optimizeMs: 100 }), ev({ durationMs: 9000, optimizeMs: 9000 }), ev({ durationMs: 500, optimizeMs: 500 })]);
   const evs = eventsByDay(dir);
   const agg = aggregate(evs);
   assert.equal(agg.actionDuration.optimize.max, 9000);

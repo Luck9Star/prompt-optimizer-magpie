@@ -75,7 +75,8 @@ export async function onRequest(body, ctx) {
       inputChars: x.in || 0,
       outputChars: x.out || 0,
       dryRun: !!o.dryRun,
-      ...(x.markCache !== undefined && { fromCache: x.markCache }),
+      ...(x.decideMs !== undefined && { decideMs: x.decideMs }),
+      ...(x.optimizeMs !== undefined && { optimizeMs: x.optimizeMs }),
       ...(o.logRewrites !== false && x.origText !== undefined && { orig: clip(x.origText) }),
       ...(o.logRewrites !== false && x.newText !== undefined && { rewritten: clip(x.newText) }),
     }, o.statsDir);
@@ -157,9 +158,10 @@ export async function onRequest(body, ctx) {
     if (mode === "auto") {
       let d;
       if (!beginCall("deciderTimeoutMs")) return pass("budget-exhausted", size);
+      const tDecide = Date.now();
       try { d = await decide(o, thread, orig); } catch (error) {
         if (expired(error)) return pass("budget-exhausted", size);
-      }
+      } finally { input.decideMs = Date.now() - tDecide; }
       if (remaining() <= 0) return pass("budget-exhausted", size);
       if (!d) {
         if (thread) {
@@ -205,12 +207,13 @@ export async function onRequest(body, ctx) {
       if (!beginCall("optimizeTimeoutMs")) return pass("budget-exhausted", size);
       if (mode === "merged") {
         let parsed;
+        const tOpt = Date.now();
         try {
           const raw = await completion(o, mergedSystemPrompt(langSuffix), orig);
           parsed = parseMerged(raw, langSuffix);
         } catch (error) {
           if (expired(error)) return pass("budget-exhausted", size);
-        }
+        } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
         if (!parsed) {
           if (!breaker.until && ++breaker.failures >= 5) breaker.until = Date.now() + 600_000;
@@ -220,9 +223,10 @@ export async function onRequest(body, ctx) {
         if (parsed.passthrough) return pass("merged-passthrough", input);
         out = parsed.rest;
       } else {
+        const tOpt = Date.now();
         try { out = await optimize(o, orig, templateId); } catch (error) {
           return pass(expired(error) ? "budget-exhausted" : "optimize-fail", size);
-        }
+        } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
         if (!out) return pass("optimize-empty", size);
         out = stripFence(out);

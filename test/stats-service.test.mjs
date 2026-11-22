@@ -74,8 +74,8 @@ test("stats-service: foreign occupant → retries then throws, never kills the o
 
 test("stats-service: aggregate + readEvents shared helpers still correct", () => {
   const events = [
-    { action: "optimize", durationMs: 100 },
-    { action: "optimize", durationMs: 300 },
+    { action: "optimize", durationMs: 100, optimizeMs: 100 },
+    { action: "optimize", durationMs: 300, optimizeMs: 300 },
     { action: "pass" },
   ];
   const agg = aggregate(events);
@@ -143,7 +143,7 @@ test("stats-service: IPv6 bind is probed on the same address; only the listener 
 test("stats-service: one denominator per experiment, version and arm; historical detail stays separate", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pom-summary-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const detail = { ts: 4, action: "optimize", reason: "optimized", durationMs: 12 };
+  const detail = { ts: 4, action: "optimize", reason: "optimized", durationMs: 12, optimizeMs: 12 };
   const summary = {
     ts: 3, action: "summary", reason: "optimized", group: "baseline", experimentId: "", version: "",
     mode: "auto", fallbackFrom: "", turn: "first", finalAction: "apply", fromCache: false, modelCalls: 2, durationMs: 10,

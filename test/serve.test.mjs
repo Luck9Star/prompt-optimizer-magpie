@@ -89,10 +89,10 @@ test("serve: aggregation over known ndjson + corrupted line tolerance", async ()
   const dir = mkdtempSync(join(tmpdir(), "pom-serve-"));
   const lines = [
     { ts: 1, agent: "claude", action: "pass", reason: "short-text", durationMs: 1, inputChars: 2, outputChars: 0, dryRun: true },
-    { ts: 2, agent: "claude", action: "optimize", reason: "optimized", durationMs: 100, inputChars: 50, outputChars: 120, dryRun: true },
-    { ts: 3, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 200, inputChars: 60, outputChars: 150, dryRun: true },
-    { ts: 4, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 400, inputChars: 60, outputChars: 150, dryRun: true },
-    { ts: 5, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 800, inputChars: 60, outputChars: 150, dryRun: true },
+    { ts: 2, agent: "claude", action: "optimize", reason: "optimized", durationMs: 100, optimizeMs: 100, inputChars: 50, outputChars: 120, dryRun: true },
+    { ts: 3, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 200, optimizeMs: 200, inputChars: 60, outputChars: 150, dryRun: true },
+    { ts: 4, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 400, optimizeMs: 400, inputChars: 60, outputChars: 150, dryRun: true },
+    { ts: 5, agent: "codex", action: "optimize", reason: "dry-run", durationMs: 800, optimizeMs: 800, inputChars: 60, outputChars: 150, dryRun: true },
     { ts: 6, agent: "hermes", action: "pass", reason: "bypass-prefix", durationMs: 3, inputChars: 10, outputChars: 0, dryRun: true },
   ];
   mkdirSync(join(dir, "stats"), { recursive: true });
