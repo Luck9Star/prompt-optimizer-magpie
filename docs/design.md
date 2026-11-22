@@ -248,7 +248,7 @@ Magpie 插件页运行在 `sandbox="allow-scripts"` frame：**无 fetch/WebSocke
 | 插件异常阻断请求 | 全链路 try/catch，任何异常 `return undefined`（fail-open） |
 | 网关自环 | 步骤 0 按 `body.model` 跳过优化组/决策组自身的请求 |
 | 机器调用被误优化 | `skipToolless` + `bypassAgents` + `bypassModels` + `kind=subagent` + 压缩/进度标记。Magpie 自有标题请求官方已跳过 hook |
-| decider 把追问误判为新任务 | confidence<0.6 放行 + 输出护栏（0.4×/max(3×,1500)）+ dryRun 期统计误判率，超标调 criteria 或关插件 |
+| decider 把追问误判为新任务 | confidence<0.6 放行 + 输出护栏（词元归一：0.4× 下限 / clamp(5×,60,2000) 上限）+ dryRun 期统计误判率，超标调 criteria 或关插件 |
 | 链预算被钳在 10s（文档与实现不符） | 写码前 sleep 探针实测（§12-2）；被钳则 optimizeTimeoutMs 降 8s、模板用 basic 缩短输出 |
 | 重试把同一句优化两次 | `cacheTtlMs` 60s |
 | dryRun 把提示词写进磁盘 | `logRewrites=false` 省略审计原文，`cacheTtlMs=0` 停止缓存读写 |

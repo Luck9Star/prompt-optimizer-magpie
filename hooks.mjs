@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import { questions, mergedSystemPrompt, parseMerged, stripFence, TAIL_NOTE } from "./lib/prompts.mjs";
 import { rewriteCacheKey, readRewrite, writeRewrite } from "./lib/rewrite-cache.mjs";
-import { preservesTokens, redact } from "./lib/rewrite-guard.mjs";
+import { countUnits, preservesTokens, redact } from "./lib/rewrite-guard.mjs";
 import { assignRollout } from "./lib/rollout.mjs";
 import { contentVersion, getTemplate } from "./templates/index.mjs";
 import { hasTools, opensTurn, lastUserText } from "./lib/turn.mjs";
@@ -234,9 +234,11 @@ export async function onRequest(body, ctx) {
     }
 
     const audit = { ...input, out: out.length, newText: out, markCache: fromCache };
-    const maxOut = Math.min(Math.max(orig.length * 3, 1500), Math.max(6000, orig.length));
-    if (out.length < orig.length * 0.4 || out.length > maxOut || !preservesTokens(orig, out))
-      return pass("output-guard", audit);
+    const origUnits = countUnits(orig), outUnits = countUnits(out);
+    const maxUnits = Math.min(Math.max(origUnits * 5, 60), 2000);
+    if (outUnits < origUnits * 0.4) return pass("output-guard-short", audit);
+    if (outUnits > maxUnits) return pass("output-guard-long", audit);
+    if (!preservesTokens(orig, out)) return pass("output-guard-tokens", audit);
     const newBody = replaceSpan(body, protocol, lu.index, orig, out);
     if (!newBody) {
       log("optimize", "no-span", audit);
