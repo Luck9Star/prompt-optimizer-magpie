@@ -446,7 +446,7 @@ test("details A: KPI p95 与详情页耗时人性化", () => {
   const dir = mk([ev({ durationMs: 9499 })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /<b>9\.4s<\/b>/);
+  assert.match(html, /<b class="v-green"[^>]*>9\.4s<\/b>/);
   assert.ok(!/9499 ms/.test(html), "no raw ms-with-space suffix");
   const d = renderDetail(evs[0], {});
   assert.match(d, /<th>durationMs<\/th><td>9\.4s<\/td>/);
@@ -483,4 +483,55 @@ test("details C: 模型组下拉注入 providers.json groups；缺失静默降�
   // 缺 providers.json：不 throw，退化为仅空选项+当前值
   const cfg3 = renderConfigPage({ current: { deciderGroup: "group/x" }, lang: "zh", groups: [] });
   assert.match(cfg3, /<select name="deciderGroup"><option value=""><\/option><option value="group\/x" selected>group\/x<\/option><\/select>/);
+});
+
+// ── .omp-kpi-brief.md ────────────────────────────────────────────────────────
+test("KPI: 6 卡渲染，decide/optimize/pass 三组 + 颜色 class + title 口径", () => {
+  const dir = mk([
+    ev({ action: "decide", reason: "new-task", durationMs: 1200 }),
+    ev({ action: "decide", reason: "new-task", durationMs: 2400 }),
+    ev({ durationMs: 300 }),
+    ev({ action: "pass", reason: "not-turn", durationMs: 1 }),
+  ]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.equal((html.match(/class="kpi"/g) || []).length, 6, "exactly six cards");
+  // decide amber ×2, optimize green ×2, pass muted ×1, total uncolored
+  assert.equal((html.match(/class="kpi"><b class="v-amber"/g) || []).length, 2);
+  assert.equal((html.match(/class="kpi"><b class="v-green"/g) || []).length, 2);
+  assert.equal((html.match(/class="kpi"><b class="v-muted"/g) || []).length, 1);
+  assert.match(html, /<b>4<\/b>/, "total card keeps default color");
+  assert.match(html, /title="decide 耗时 p50：仅 action=decide 事件的 durationMs 分布"/);
+  assert.match(html, /title="decide 耗时 p95：仅 action=decide 事件的 durationMs 分布"/);
+  assert.match(html, /title="optimize 耗时 p95：仅 action=optimize 事件的 durationMs 分布"/);
+  assert.match(html, /title="pass 耗时 p95：仅 action=pass 事件的 durationMs 分布（规则放行应接近 0）"/);
+  assert.match(html, />decide p50<\/span>/);
+  assert.match(html, />pass p95</);
+});
+
+test("KPI: 无该 action 数据时显示 —", () => {
+  const dir = mk([ev({ durationMs: 500 })]); // only optimize
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<b class="v-amber"[^>]*>–<\/b>/); // decide p50/p95 both dash
+  assert.equal((html.match(/v-amber[^>]*>–/g) || []).length, 2);
+  assert.match(html, /<b class="v-muted"[^>]*>–<\/b>/); // pass p95 dash
+  assert.match(html, /<b class="v-green"[^>]*>500ms<\/b>/);
+});
+
+test("KPI: percentile 正确性（按 action 分桶）", () => {
+  const dir = mk([
+    ...[100, 200, 300, 400, 5000].map((d) => ev({ durationMs: d })),       // optimize
+    ...[10, 20, 30].map((d) => ev({ action: "decide", reason: "new-task", durationMs: d })),
+  ]);
+  const evs = eventsByDay(dir);
+  const agg = aggregate(evs);
+  assert.equal(agg.actionDuration.optimize.count, 5);
+  assert.equal(agg.actionDuration.optimize.p50, 300); // ceil(0.5*5)-1 = index 2
+  assert.equal(agg.actionDuration.decide.p50, 20);
+  assert.equal(agg.actionDuration.decide.p95, 30);
+  assert.equal(agg.actionDuration.pass.count, 0);
+  assert.equal(agg.actionDuration.pass.p95, null);
+  // 兼容别名：optimizeDuration = actionDuration.optimize
+  assert.equal(agg.optimizeDuration.p95, 5000);
 });
