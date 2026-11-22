@@ -76,10 +76,13 @@
       "gatewayUrl": "http://127.0.0.1:3425",
       "port": 0,
       "bind": "127.0.0.1",
-      "configPage": false
+      "configPage": false,
+      "minChars": 6,
+      "maxChars": 12000
     }
   },
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.2",
+    "node": ">=20"
   }
 }
