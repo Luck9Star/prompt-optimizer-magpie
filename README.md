@@ -39,6 +39,12 @@ magpie group add group/route-decider <decision-model> --routing order
 然后安装插件（本地目录）：
 
 ```bash
+magpie plugin add npm:prompt-optimizer-magpie
+```
+
+或从源码安装（本地目录）：
+
+```bash
 git clone https://github.com/Luck9Star/prompt-optimizer-magpie.git
 magpie plugin add /path/to/prompt-optimizer-magpie
 ```

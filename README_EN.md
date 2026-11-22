@@ -39,6 +39,12 @@ magpie group add group/route-decider <decision-model> --routing order
 Then install the plugin from a local directory:
 
 ```bash
+magpie plugin add npm:prompt-optimizer-magpie
+```
+
+Or install from source (local directory):
+
+```bash
 git clone https://github.com/Luck9Star/prompt-optimizer-magpie.git
 magpie plugin add /path/to/prompt-optimizer-magpie
 ```
