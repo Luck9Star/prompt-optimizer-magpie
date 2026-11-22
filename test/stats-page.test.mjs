@@ -205,9 +205,9 @@ test("stats-page: 需求2 action 列渲染彩色 tag（映射 + 渲染）", () =
   const dir = mk([ev(), ev({ action: "decide", reason: "followup" }), ev({ action: "pass", reason: "not-turn" })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /<span class="tag tag-green">optimize<\/span>/);
-  assert.match(html, /<span class="tag tag-amber">decide<\/span>/);
-  assert.match(html, /<span class="tag tag-muted">pass<\/span>/);
+  assert.match(html, /<span class="tag tag-green"><span data-lang="zh">改写<\/span><span data-lang="en">optimize<\/span><\/span>/);
+  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">判定<\/span><span data-lang="en">decide<\/span><\/span>/);
+  assert.match(html, /<span class="tag tag-muted"><span data-lang="zh">放行<\/span><span data-lang="en">pass<\/span><\/span>/);
 });
 
 test("stats-page: 需求3 reason 分组纯函数：green/amber/red/后缀-失败/前缀-choice/未知灰", () => {
@@ -251,4 +251,61 @@ test("stats-page: 需求5 详情页空 orig/rewritten 显示解释文案；有�
   const evs2 = eventsByDay(withText);
   const d2 = renderDetail(evs2[0], {});
   assert.ok(!d2.includes("此路径不记录原文"), "no explanation when text present");
+});
+
+// ── .omp-i18n-brief.md 需求1-2（新增断言，不改已有断言） ─────────────────────
+test("i18n: 需求1 列表页首行是最新事件（时间倒序，第 1 页最新）", () => {
+  const dir = mk([ev({ ts: 1700000000000 }), ev({ ts: 1700000001000 }), ev({ ts: 1700000002000 })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  const firstTs = html.match(/<tbody><tr>\s*<td><a[^>]*>[0-9a-f]{6}<\/a><\/td>\s*<td>(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})<\/td>/);
+  assert.ok(firstTs, "first row timestamp captured");
+  assert.equal(firstTs[1], "2023-11-14 22:13:22", "newest ts first"); // 1700000002000
+});
+
+test("i18n: 需求2 zh 模式 action/reason 显示中文标签", () => {
+  const dir = mk([ev(), ev({ action: "pass", reason: "not-turn" }), ev({ action: "decide", reason: "followup" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<span class="tag tag-green"><span data-lang="zh">改写<\/span>/);
+  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">判定<\/span>/);
+  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">非回合首条<\/span>/); // reason reuses r_* legend entry
+  assert.match(html, /<span class="chip"><span data-lang="zh">改写<\/span>/); // 动作分布胶囊
+  assert.match(html, /<option value="not-turn"[^>]*><span data-lang="zh">非回合首条<\/span>/);
+  const d = renderDetail(evs[0], {});
+  assert.match(d, /<th>action<\/th><td><span data-lang="zh">改写<\/span>/); // 详情元数据
+});
+
+test("i18n: 需求2 en 模式显示原始英文值", () => {
+  const dir = mk([ev(), ev({ action: "pass", reason: "not-turn" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, { lang: "en" });
+  assert.match(html, /<span class="tag tag-green"><span data-lang="zh">改写<\/span><span data-lang="en">optimize<\/span>/);
+  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
+  assert.match(html, /<option value="not-turn"[^>]*><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
+  const d = renderDetail(evs[1], { lang: "en" });
+  assert.match(d, /<th>reason<\/th><td><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
+});
+
+test("i18n: 需求2 tag CSS class 仍基于原始值生成；筛选 option value 保持原始英文", () => {
+  const dir = mk([ev(), ev({ action: "pass", reason: "output-guard" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  // class 由原始 reason 值分组（output-guard → red），与中文文案无关
+  assert.match(html, /<span class="tag tag-red"><span data-lang="zh">改写超护栏已回退<\/span>/);
+  assert.ok(!/tag-(改写|放行)/.test(html), "no translated class names");
+  // 服务端筛选依赖原始 value
+  assert.match(html, /<option value="output-guard"/);
+  assert.match(html, /<option value="optimize"/);
+});
+
+test("i18n: 需求1 详情链接与 KPI/Top10 不受排序影响", () => {
+  const dir = mk([ev({ ts: 1700000000000, reason: "optimized" }), ev({ ts: 1700000001000, reason: "optimized" }), ev({ ts: 1700000002000, action: "pass", reason: "short-text" })]);
+  const evs = eventsByDay(dir);
+  const stats = aggregate(evs);
+  const html = renderPage(stats, evs, {});
+  assert.equal(stats.total, 3, "KPI 不变");
+  assert.match(html, /detail=2026-01-01%3A2/, "原始 day:seq 寻址仍在");
+  const byId = renderPage(stats, evs, { action: "pass" });
+  assert.match(byId, /detail=2026-01-01%3A3/, "筛选后链接仍指向同一事件");
 });
