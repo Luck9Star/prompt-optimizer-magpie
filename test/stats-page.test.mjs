@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, shortId, reasonGroup, ACTION_TAG } from "../lib/stats-page.mjs";
+import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, shortId, reasonGroup, ACTION_TAG } from "../lib/stats-page.mjs";
 import { aggregate } from "../lib/stats-service.mjs";
 
 const mk = (rows, day = "2026-01-01") => {
@@ -119,11 +119,11 @@ test("pass0: pass 行 in/out 显示「原样跳过」而非 0/0；en 显示 skip
   assert.match(en, /data-lang="en">skipped as-is<\/span>/);
   assert.ok(!/<td>0\/0<\/td>/.test(en));
   // optimize 行照旧数字形态（fixture 34/303）
-  assert.match(zh, /<td>34\/303<\/td>/);
+  assert.match(zh, /<td style="--label:var\(--label-5\)">34\/303<\/td>/);
   // decide 行不受影响（无 rewritten 仍显示数字）
   const dir2 = mk([ev({ action: "decide", reason: "followup", inputChars: 12, outputChars: 0 })]);
   const html2 = renderPage(aggregate(eventsByDay(dir2)), eventsByDay(dir2), {});
-  assert.match(html2, /<td>12\/0<\/td>/);
+  assert.match(html2, /<td style="--label:var\(--label-5\)">12\/0<\/td>/);
 });
 
 test("stats-page: pagination renders page 2 and next/prev links keep filters", () => {
@@ -212,8 +212,8 @@ test("stats-page: 需求1 durationMs 列出现在事件明细表", () => {
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
   assert.match(html, /<th[^>]*>.*?耗时/s);
-  assert.match(html, /<td>1234<\/td>/);
-  assert.match(html, /<td>0<\/td>/);
+  assert.match(html, /<td style="--label:var\(--label-6\)">1234<\/td>/);
+  assert.match(html, /<td style="--label:var\(--label-6\)">0<\/td>/);
 });
 
 test("stats-page: 需求2 action 列渲染彩色 tag（映射 + 渲染）", () => {
@@ -277,7 +277,7 @@ test("i18n: 需求1 列表页首行是最新事件（时间倒序，第 1 页最
   const dir = mk([ev({ ts: 1700000000000 }), ev({ ts: 1700000001000 }), ev({ ts: 1700000002000 })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  const firstTs = html.match(/<tbody><tr>\s*<td><a[^>]*>[0-9a-f]{6}<\/a><\/td>\s*<td>(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})<\/td>/);
+  const firstTs = html.match(/<tbody><tr>\s*<td><a[^>]*>[0-9a-f]{6}<\/a><\/td>\s*<td[^>]*>(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})<\/td>/);
   assert.ok(firstTs, "first row timestamp captured");
   assert.equal(firstTs[1], "2023-11-14 22:13:22", "newest ts first"); // 1700000002000
 });
@@ -375,4 +375,56 @@ test("tooltip: title 值经属性转义（含引号与尖括号的 reason）", (
   // esc() 属性上下文：引号与尖括号都必须转成实体，不得裸露
   assert.match(html, /title="weird &#34;reason&#34; &#60;b&#62;x&#60;\/b&#62;"/);
   assert.ok(!/title="[^"]*<b>/.test(html), "no raw <b> inside title");
+});
+
+// ── .omp-redesign-brief.md（A/B/C 规则回归断言） ──────────────────────────────
+test("redesign A: semantic nav tabs with aria-current, no layout-shift states", () => {
+  const dir = mk([ev()]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<nav class="tabs" aria-label="[^"]+"><ul><li><a href="\.\/"/);
+  assert.match(html, /href="\.\/" aria-current="page"/, "stats tab current on list page");
+  assert.ok(!/href="\.\/\?page=config" aria-current/.test(html), "config tab not current");
+  const cfg = renderConfigPage({ current: {}, lang: "zh" });
+  assert.match(cfg, /href="\.\/\?page=config" aria-current="page"/, "config tab current on config page");
+  // no size change on selected/hover; no box-shadow/background states
+  assert.match(html, /nav\.tabs a\[aria-current="page"\][^}]*border-block-end-color/);
+  assert.ok(!/nav\.tabs a(:hover|\[aria-current="page"\])[^}]*(box-shadow|background)/s.test(html));
+});
+
+test("redesign B: responsive tables — wrapper region, sticky head, stacked cards, labels", () => {
+  const dir = mk([ev()]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<div class="table-wrapper" tabindex="0" role="region" aria-labelledby="[^"]+">/);
+  assert.match(html, /container-type: inline-size/);
+  assert.match(html, /position: sticky/);
+  assert.match(html, /@container \(max-width: 40em\)/);
+  assert.match(html, /td::before \{ content: var\(--label/);
+  assert.match(html, /style="--label-1:[^;]+;--label-2:[^;]+;--label-3:[^;]+;--label-4:[^;]+;--label-5:[^;]+;--label-6:[^;]+"/, "per-column label vars on the events table");
+  assert.match(html, /--label:var\(--label-5\)/, "in/out cell carries its label var");
+});
+
+test("redesign C: focus-visible ring + spacing tokens present", () => {
+  const dir = mk([ev()]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /:focus-visible \{\s*outline: 2px solid var\(--magpie-accent/);
+  assert.match(html, /a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible/);
+  assert.match(html, /--space-1: \.25rem; --space-2: \.5rem; --space-3: 1rem; --space-4: 1\.5rem/);
+  assert.match(html, /padding: var\(--space-4\) var\(--space-3\) 3rem/);
+});
+
+test("redesign hard constraints: script tags byte-identical, zero JS additions", () => {
+  const dir = mk([ev()]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  const cfg = renderConfigPage({ current: {}, lang: "en" });
+  const det = renderDetail(evs[0], {});
+  for (const [name, page] of [["list", html], ["config", cfg], ["detail", det]]) {
+    assert.ok(page.includes(`<script src="../bridge.js"></script>\n<script src="./lang.js" defer></script>`), `${name}: both script tags unchanged`);
+    assert.equal((page.match(/<script/g) || []).length, 2, `${name}: exactly two script tags`);
+    assert.ok(!/fetch\(|XMLHttpRequest/.test(page), `${name}: no fetch/XHR`);
+    assert.ok(!/\son[a-z]+="/.test(page), `${name}: no inline event handlers`);
+  }
 });
