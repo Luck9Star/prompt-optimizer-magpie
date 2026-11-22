@@ -26,6 +26,9 @@ const DEFAULTS = {
   skipToolless: true,
   cacheTtlMs: 60000,
   deciderTimeoutMs: 1500,
+  // 输出护栏上限倍率：clamp(origUnits * guardRatioLimit, 60, 2000)。生产
+  // 案例 2026-11-22：52 词元原文 ×5 上限 260 误杀 430 词元改写 → 默认 ×10。
+  guardRatioLimit: 10,
   optimizeTimeoutMs: 15000,
   // merged 模式：单次 optimize 调用同时完成模板选择 + 改写（首行标记协议）。
   // optimizerMode: "auto"（默认，现行为）| "merged"（跳过 decider，首轮直接 merged）。
@@ -74,6 +77,8 @@ export async function onRequest(body, ctx) {
       durationMs: Date.now() - t0,
       inputChars: x.in || 0,
       outputChars: x.out || 0,
+      ...(x.inUnits !== undefined && { inputUnits: x.inUnits }),
+      ...(x.outUnits !== undefined && { outputUnits: x.outUnits }),
       dryRun: !!o.dryRun,
       ...(x.decideMs !== undefined && { decideMs: x.decideMs }),
       ...(x.optimizeMs !== undefined && { optimizeMs: x.optimizeMs }),
@@ -124,10 +129,10 @@ export async function onRequest(body, ctx) {
       } catch {}
     }
     if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
-    if (orig.length < o.minChars) return pass("short-text", { in: orig.length });
-    if (orig.length > o.maxChars) return pass("too-long", { in: orig.length });
+    if (orig.length < o.minChars) return pass("short-text", { in: orig.length, inUnits: countUnits(orig) });
+    if (orig.length > o.maxChars) return pass("too-long", { in: orig.length, inUnits: countUnits(orig) });
 
-    const size = { in: orig.length };
+    const size = { in: orig.length, inUnits: countUnits(orig) };
     const input = { ...size, origText: orig };
     if (protocol === "responses" && body.previous_response_id) return pass("no-decider-followup", size);
     const thread = hasAssistantReply(body, protocol);
@@ -233,9 +238,9 @@ export async function onRequest(body, ctx) {
       }
     }
 
-    const audit = { ...input, out: out.length, newText: out, markCache: fromCache };
     const origUnits = countUnits(orig), outUnits = countUnits(out);
-    const maxUnits = Math.min(Math.max(origUnits * 5, 60), 2000);
+    const audit = { ...input, out: out.length, outUnits, newText: out, markCache: fromCache };
+    const maxUnits = Math.min(Math.max(origUnits * (o.guardRatioLimit || 10), 60), 2000);
     if (outUnits < origUnits * 0.4) return pass("output-guard-short", audit);
     if (outUnits > maxUnits) return pass("output-guard-long", audit);
     if (!preservesTokens(orig, out)) return pass("output-guard-tokens", audit);

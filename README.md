@@ -83,6 +83,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `deciderGroup` | `group/route-decider` | 决策模型组；留空 `""` = 纯规则模式（长线程全放行，只优化首轮） |
 | `optimizeGroup` | `group/prompt-optimize` | 优化调用的模型组 |
 | `minChars` / `maxChars` | `6` / `12000` | 用户原文长度窗口。`<minChars` 同步硬放行；`maxChars` 是防整本书粘贴的绝对上限，正常范围内的长文本交决策模型判断 |
+| `guardRatioLimit` | `10` | 输出护栏上限倍率：改写词元数上限 `clamp(原文词元 × N, 60, 2000)`。默认 ×10（生产实测：52 词元原文的结构化改写 430 词元曾被 ×5 误杀）；配置页可改 |
 | `bypassPrefix` | `["!!", "##"]` | 用户原文以任一前缀开头则原样发送。**推荐用 `##`**：omp/pi 等 TUI 会把 `!!` 当 shell 转义吃掉，根本到不了网关；claude 类 TUI 也把 `!!` 当 bash 输入。`##` 在所有实测 agent 上都能原样到达（claude/grok 已验证 bypass-prefix） |
 | `bypassModels` | `[]` | 命中这些 `body.model` 直接放行（排除机器任务模型，如 `group/bili-summary`） |
 | `bypassAgents` | `[]` | 命中这些 `ctx.agent` 直接放行（不想被优化的 agent 白名单，任何网关调用前拦截） |
@@ -115,7 +116,7 @@ magpie plugin options prompt-optimizer-magpie '{
 
 - 剥离外围代码围栏；新结果和缓存命中都比对 `[REDACTED]`、双花括号占位符和反引号标识符的**数量**；字面比对容错等价写法（`{{ name }}` ≡ `{{name}}`，反引号 token 比内容），数量增减仍拦截；
 - 长度上下限按**词元数**而非字符数（中文 1 字 = 1 词元，连续英文单词/数字/标识符 = 1 词元，标点空白不计）：JS `.length` 按 UTF-16 code unit 计数，天然低估中文、高估英文，同一护栏对两种语言宽严不一；
-- 下限 `0.4×` 原文词元（防止越改越短）；上限 `clamp(5× 原文词元, 60, 2000)`——短需求给足结构化扩写空间（60 词元保底，实测 17 字需求 → 552 字提示词是期望效果），长输入最多扩 5 倍且封顶 2000 词元。生产事故驱动：182 字中文原文 → 612 字优质改写曾被字符级 ×3 上限误杀；
+- 下限 `0.4×` 原文词元（防止越改越短）；上限 `clamp(guardRatioLimit × 原文词元, 60, 2000)`，倍率默认 `10` 可配（配置页 `guardRatioLimit`）——短需求给足结构化扩写空间（60 词元保底，实测 17 字需求 → 552 字提示词是期望效果），长输入最多扩 N 倍且封顶 2000 词元。生产事故驱动：182 字中文原文 → 612 字优质改写曾被字符级 ×3 上限误杀；
 - 护栏触发细分为三个 reason，统计页红色分组可观测：`output-guard-short`（低于下限）/ `output-guard-long`（超上限）/ `output-guard-tokens`（token 校验失败）。
 
 替换只动最后一条 user 消息中**唯一匹配**的用户原文 span：先逐字匹配，失败后空白规范化匹配；零命中或多重命中一律放行，绝不用 `ctx.query` 整段覆盖。
