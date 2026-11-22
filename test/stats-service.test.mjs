@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeStatsServer, startStatsService, aggregate, renderPage } from "../lib/stats-service.mjs";
-import { readEvents } from "../lib/stats.mjs";
+import { readEvents, localDay } from "../lib/stats.mjs";
 
 const once = (port, path) =>
   new Promise((resolve, reject) => {
@@ -21,7 +21,7 @@ const once = (port, path) =>
 test("stats-service: ephemeral bind serves / and /api/stats", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pom-svc-"));
   mkdirSync(join(dir, "stats"), { recursive: true });
-  writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), JSON.stringify({ ts: 1, agent: "a", action: "pass", reason: "not-turn" }) + "\n");
+  writeFileSync(join(dir, "stats", localDay() + ".ndjson"), JSON.stringify({ ts: 1, agent: "a", action: "pass", reason: "not-turn" }) + "\n");
   const svc = await startStatsService({ port: 0, statsDir: join(dir, "stats") });
   try {
     assert.equal(svc.reused, false);

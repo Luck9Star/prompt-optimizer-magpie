@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // v0.2: spawn serve.mjs with PORT=0 + POM_DATA_DIR, assert endpoints + lifecycle.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -99,7 +100,7 @@ test("serve: aggregation over known ndjson + corrupted line tolerance", async ()
     { ts: 6, agent: "hermes", action: "pass", reason: "bypass-prefix", durationMs: 3, inputChars: 10, outputChars: 0, dryRun: true },
   ];
   mkdirSync(join(dir, "stats"), { recursive: true });
-  writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n{corrupted!!\n");
+  writeFileSync(join(dir, "stats", localDay() + ".ndjson"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n{corrupted!!\n");
 
   const { child, serviceJson } = await startServe(dir);
   try {
@@ -167,8 +168,8 @@ test("serve: startup prune honors POM_RETAIN_DAYS (7d default behavior)", async 
   mkdirSync(join(dir, "stats"), { recursive: true });
   // day-file layout: retention is by FILE date — the 8d-old event goes in an
   // 8-day-old file, the fresh one in today's file
-  writeFileSync(join(dir, "stats", new Date(NOW - 8 * 86400_000).toISOString().slice(0, 10) + ".ndjson"), JSON.stringify(lines[0]) + "\n");
-  writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), JSON.stringify(lines[1]) + "\n");
+  writeFileSync(join(dir, "stats", localDay(new Date(NOW - 8 * 86400_000)) + ".ndjson"), JSON.stringify(lines[0]) + "\n");
+  writeFileSync(join(dir, "stats", localDay() + ".ndjson"), JSON.stringify(lines[1]) + "\n");
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
     env: { ...process.env, PORT: "0", POM_DATA_DIR: dir, POM_STATS_DIR: join(dir, "stats"), POM_LEGACY_STATS_DIR: join(dir, "no-legacy") }, // no POM_RETAIN_DAYS → default 7
     stdio: "ignore",

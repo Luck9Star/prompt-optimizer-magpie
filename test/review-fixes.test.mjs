@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // Regression tests for the omp full-review findings (2026-11-21).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -50,7 +51,7 @@ test("stats retention: invalid values warn and use seven days; explicit opt-outs
   const dir = mkdtempSync(join(tmpdir(), "pom-retain-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const warn = t.mock.method(console, "warn", () => {});
-  const dayFile = (age) => join(dir, new Date(Date.now() - age * 86400_000).toISOString().slice(0, 10) + ".ndjson");
+  const dayFile = (age) => join(dir, localDay(new Date(Date.now() - age * 86400_000)) + ".ndjson");
   for (const value of ["", "  ", "abc", "1e300", "0", "-1"]) {
     const keep = Number(value) <= 0 && value.trim() !== "";
     writeFileSync(dayFile(8), "");

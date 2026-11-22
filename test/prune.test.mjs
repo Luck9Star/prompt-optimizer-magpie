@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prune, readEvents } from "../lib/stats.mjs";
+import { prune, readEvents, localDay } from "../lib/stats.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "pom-prune-"));
 const NOW = Date.now();
-const day = (offsetDays) => new Date(NOW - offsetDays * 86400_000).toISOString().slice(0, 10);
+const day = (offsetDays) => localDay(new Date(NOW - offsetDays * 86400_000));
 
 test("prune: unlinks day files older than retainDays, keeps recent, returns count", () => {
   const s = join(dir, "stats");

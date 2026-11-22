@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // Rewrite-audit logging: optimized/dry-run/clipped/no-span events carry
 // orig + rewritten text, and logRewrites:false suppresses them.
 import { test } from "node:test";
@@ -11,7 +12,7 @@ import { mockGateway } from "./helpers.gateway.mjs";
 // tmp statsDir via options.statsDir — never touch the real stats/ dir.
 const dir = mkdtempSync(join(tmpdir(), "pom-audit-"));
 const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
-const FILE = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
+const FILE = join(dir, localDay() + ".ndjson");
 // Scan for OUR event by a unique marker instead of racing on the last line.
 const findMine = (needle, tries = 40) => {
   for (let i = 0; i < tries; i++) {

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, fmtDur, shortId, reasonGroup, ACTION_TAG } from "../lib/stats-page.mjs";
+import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, fmtDur, shortId, reasonGroup, ACTION_TAG, localStamp } from "../lib/stats-page.mjs";
 import { aggregate } from "../lib/stats-service.mjs";
 
 const mk = (rows, day = "2026-01-01") => {
@@ -279,7 +279,7 @@ test("i18n: 需求1 列表页首行是最新事件（时间倒序，第 1 页最
   const html = renderPage(aggregate(evs), evs, {});
   const firstTs = html.match(/<tbody><tr>\s*<td><a[^>]*>[0-9a-f]{6}<\/a><\/td>\s*<td[^>]*>(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})<\/td>/);
   assert.ok(firstTs, "first row timestamp captured");
-  assert.equal(firstTs[1], "2023-11-14 22:13:22", "newest ts first"); // 1700000002000
+  assert.equal(firstTs[1], localStamp(1700000002000), "newest ts first (local)");
 });
 
 test("i18n: 需求2 zh 模式 action/reason 显示中文标签", () => {

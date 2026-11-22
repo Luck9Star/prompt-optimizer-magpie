@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // 阶段计时回归（.omp-timing-brief.md）：
 // 真实 decide()/optimize()/merged completion() 调用记 decideMs/optimizeMs；
 // cache-hit、pass、护栏失败不产生阶段字段，也不进 KPI 分位桶。
@@ -20,7 +21,7 @@ const threadBody = (text) => ({ tools: [{}], messages: [
 ] });
 const ORIG = "帮我把这个模糊的需求改写成具体的中文提示词描述并补全上下文";
 const REWRITE = "这是按照专业模板改写后的完整中文提示词内容，长度足够通过护栏检查要求。";
-const dayFile = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
+const dayFile = join(dir, localDay() + ".ndjson");
 const readEvents = () => { try { return readFileSync(dayFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.action !== "summary"); } catch { return []; } };
 const lastOptimize = () => readEvents().filter((e) => e.action === "optimize").at(-1);
 

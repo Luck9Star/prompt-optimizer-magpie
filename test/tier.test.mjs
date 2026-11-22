@@ -1,3 +1,4 @@
+import { localDay } from "../lib/stats.mjs";
 // v0.1 milestone gap tests: decider template-tier routing (tpl question),
 // retry cache (design §4.6), and bypassAgents (design step 0).
 import { test } from "node:test";
@@ -13,7 +14,7 @@ import { mockGateway } from "./helpers.gateway.mjs";
 // tmp statsDir via options.statsDir — never touch the real stats/ dir.
 const dir = mkdtempSync(join(tmpdir(), "pom-tier-"));
 const readFileSyncTolerant = (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } };
-const FILE = join(dir, new Date().toISOString().slice(0, 10) + ".ndjson");
+const FILE = join(dir, localDay() + ".ndjson");
 // record() appends async-visible lines; read back and scan for OUR line
 // (matched by the unique prompt text) instead of the racy "last line".
 const findMine = (needle, tries = 40) => {
