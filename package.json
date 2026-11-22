@@ -5,6 +5,18 @@
   "type": "module",
   "license": "AGPL-3.0-only",
   "main": "./index.mjs",
+  "files": [
+    "hooks.mjs",
+    "index.mjs",
+    "serve.mjs",
+    "lib/",
+    "page/",
+    "templates/",
+    "docs/",
+    "README.md",
+    "README_EN.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test",
     "serve": "node serve.mjs"
@@ -44,7 +56,10 @@
       "rollout": null,
       "overrides": [],
       "deciderFallback": "rule",
-      "bypassPrefix": ["!!", "##"],
+      "bypassPrefix": [
+        "!!",
+        "##"
+      ],
       "bypassModels": [],
       "bypassAgents": [],
       "allowedOrigins": [],
