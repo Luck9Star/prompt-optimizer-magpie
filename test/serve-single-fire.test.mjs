@@ -39,7 +39,7 @@ test("serve: single 'listening' fire after retry recovery (leaver exits mid-retr
   ]);
   await new Promise((r) => setTimeout(r, 150));
   const child = spawn("node", [join(ROOT, "serve.mjs")], {
-    env: { ...process.env, PORT: String(PORT), POM_FALLBACK_PORT: String(await freePort()), POM_DATA_DIR: dir, POM_RETAIN_DAYS: "0" },
+    env: { ...process.env, PORT: String(PORT), POM_FALLBACK_PORT: String(await freePort()), POM_DATA_DIR: dir, POM_STATS_DIR: join(dir, "stats"), POM_LEGACY_STATS_DIR: join(dir, "no-legacy"), POM_RETAIN_DAYS: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";

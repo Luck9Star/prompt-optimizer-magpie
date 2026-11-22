@@ -41,7 +41,10 @@ async function startServe(dataDir, port = 0) {
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
     // POM_RETAIN_DAYS=0: startup prune off — fixture ts values are arbitrary;
     // pruning itself is covered by the dedicated retain test below.
-    env: { ...process.env, PORT: String(port), POM_DATA_DIR: dataDir, POM_RETAIN_DAYS: "0" },
+    // POM_STATS_DIR serves fixtures from the tmp dir; POM_LEGACY_STATS_DIR
+    // points migration at a nonexistent dir — the dev checkout HAS a real
+    // package-internal stats/ that must never leak into a spawned serve.
+    env: { ...process.env, PORT: String(port), POM_DATA_DIR: dataDir, POM_STATS_DIR: join(dataDir, "stats"), POM_LEGACY_STATS_DIR: join(dataDir, "no-legacy"), POM_RETAIN_DAYS: "0" },
     stdio: "ignore",
   });
   const serviceJson = join(dataDir, "service.json");
@@ -128,7 +131,7 @@ test("serve: occupied fixed port retries then binds fallback", async () => {
   await new Promise((r) => blocker.listen(mainPort, "127.0.0.1", r));
   const dir = mkdtempSync(join(tmpdir(), "pom-serve-"));
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
-    env: { ...process.env, PORT: String(mainPort), POM_FALLBACK_PORT: String(fallbackPort), POM_DATA_DIR: dir, POM_RETAIN_DAYS: "0" },
+    env: { ...process.env, PORT: String(mainPort), POM_FALLBACK_PORT: String(fallbackPort), POM_DATA_DIR: dir, POM_STATS_DIR: join(dir, "stats"), POM_LEGACY_STATS_DIR: join(dir, "no-legacy"), POM_RETAIN_DAYS: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -167,7 +170,7 @@ test("serve: startup prune honors POM_RETAIN_DAYS (7d default behavior)", async 
   writeFileSync(join(dir, "stats", new Date(NOW - 8 * 86400_000).toISOString().slice(0, 10) + ".ndjson"), JSON.stringify(lines[0]) + "\n");
   writeFileSync(join(dir, "stats", new Date().toISOString().slice(0, 10) + ".ndjson"), JSON.stringify(lines[1]) + "\n");
   const child = spawn(process.execPath, [join(ROOT, "serve.mjs")], {
-    env: { ...process.env, PORT: "0", POM_DATA_DIR: dir }, // no POM_RETAIN_DAYS → default 7
+    env: { ...process.env, PORT: "0", POM_DATA_DIR: dir, POM_STATS_DIR: join(dir, "stats"), POM_LEGACY_STATS_DIR: join(dir, "no-legacy") }, // no POM_RETAIN_DAYS → default 7
     stdio: "ignore",
   });
   const serviceJson = join(dir, "service.json");

@@ -1,16 +1,20 @@
 // v0.2 standalone stats daemon (design §6). All HTTP logic lives in
 // lib/stats-service.mjs, shared with index.mjs (magpie plugin host entry).
-// This file adds: env overrides (PORT, POM_DATA_DIR, POM_BIND), service.json
-// discovery for systemd and EADDRINUSE retry+fallback.
+// This file adds: env overrides (PORT, POM_DATA_DIR for service.json, POM_BIND,
+// POM_STATS_DIR for day-files), service.json discovery for systemd and
+// EADDRINUSE retry+fallback.
 import { writeFileSync, rmSync, readFileSync, symlinkSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeStatsServer } from "./lib/stats-service.mjs";
+import { resolveStatsDir, migrateLegacyStats } from "./lib/stats.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)));
+// Stats moved out of the package dir (survives `magpie plugin update`);
+// POM_DATA_DIR only relocates service.json/instance records (systemd units).
 const DATA_DIR = process.env.POM_DATA_DIR || ROOT;
-const STATS = join(DATA_DIR, "stats"); // daily day-files (lib/stats.mjs)
+const STATS = resolveStatsDir(); // env POM_STATS_DIR > ~/.config/magpie/prompt-optimizer-magpie/stats
 const SERVICE = join(DATA_DIR, "service.json");
 const instanceRecord = join(DATA_DIR, `.service-${randomUUID()}.json`);
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
@@ -18,6 +22,8 @@ const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).ver
 // （stats 日志里有截断后的提示词原文，对内网可见——见 README 隐私说明）。
 const BIND = process.env.POM_BIND || "127.0.0.1";
 
+// One-shot: bring package-internal legacy stats/ over before first read.
+if (migrateLegacyStats()) console.log("serve: migrated legacy stats/ to " + STATS);
 const server = makeStatsServer({ statsDir: STATS, bind: BIND });
 // design §6: ephemeral (PORT=0) is the norm; a fixed PORT may hit EADDRINUSE —
 // per candidate: same-port retry 16×100ms (a leaving process's socket often

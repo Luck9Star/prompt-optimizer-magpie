@@ -10,6 +10,7 @@ import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startStatsService } from "./lib/stats-service.mjs";
+import { resolveStatsDir, migrateLegacyStats } from "./lib/stats.mjs";
 
 const PAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), "page");
 
@@ -19,7 +20,10 @@ export default {
   id: "prompt-optimizer-magpie",
   server: async (_input, options) => {
     if (!started) {
+      // One-shot: bring package-internal legacy stats/ over (survives updates).
+      if (migrateLegacyStats()) console.log("pom: migrated legacy stats/ to " + resolveStatsDir());
       started = startStatsService({
+        statsDir: resolveStatsDir(),
         // options.port: magpie.page.service.option "port" in package.json;
         // 0 = ephemeral — `|| 3497` would silently swallow it.
         port: Number.isFinite(Number(options?.port)) ? Number(options.port) : 3497,
