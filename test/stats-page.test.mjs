@@ -485,8 +485,8 @@ test("details C: 模型组下拉注入 providers.json groups；缺失静默降�
   assert.match(cfg3, /<select name="deciderGroup"><option value=""><\/option><option value="group\/x" selected>group\/x<\/option><\/select>/);
 });
 
-// ── .omp-kpi-brief.md ────────────────────────────────────────────────────────
-test("KPI: 6 卡渲染，decide/optimize/pass 三组 + 颜色 class + title 口径", () => {
+// ── .omp-kpi-brief.md / .omp-pct-brief.md ────────────────────────────────────
+test("KPI: 卡渲染（总数 + decide/optimize/pass 各一张，随 pct 取值）+ title 口径", () => {
   const dir = mk([
     ev({ action: "decide", reason: "new-task", durationMs: 1200 }),
     ev({ action: "decide", reason: "new-task", durationMs: 2400 }),
@@ -495,17 +495,13 @@ test("KPI: 6 卡渲染，decide/optimize/pass 三组 + 颜色 class + title 口�
   ]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.equal((html.match(/class="kpi"/g) || []).length, 6, "exactly six cards");
-  // decide amber ×2, optimize green ×2, pass muted ×1, total uncolored
-  assert.equal((html.match(/class="kpi"><b class="v-amber"/g) || []).length, 2);
-  assert.equal((html.match(/class="kpi"><b class="v-green"/g) || []).length, 2);
-  assert.equal((html.match(/class="kpi"><b class="v-muted"/g) || []).length, 1);
+  assert.equal((html.match(/class="kpi"/g) || []).length, 4, "total + one card per action");
+  assert.match(html, /<b class="v-amber"[^>]*>2\.4s<\/b>/); // decide p95 default
+  assert.match(html, /<b class="v-green"[^>]*>300ms<\/b>/);
+  assert.match(html, /<b class="v-muted"[^>]*>1ms<\/b>/);
   assert.match(html, /<b>4<\/b>/, "total card keeps default color");
-  assert.match(html, /title="decide 耗时 p50：仅 action=decide 事件的 durationMs 分布"/);
   assert.match(html, /title="decide 耗时 p95：仅 action=decide 事件的 durationMs 分布"/);
-  assert.match(html, /title="optimize 耗时 p95：仅 action=optimize 事件的 durationMs 分布"/);
-  assert.match(html, /title="pass 耗时 p95：仅 action=pass 事件的 durationMs 分布（规则放行应接近 0）"/);
-  assert.match(html, />decide p50<\/span>/);
+  assert.match(html, />decide p95<\/span>/);
   assert.match(html, />pass p95</);
 });
 
@@ -513,9 +509,9 @@ test("KPI: 无该 action 数据时显示 —", () => {
   const dir = mk([ev({ durationMs: 500 })]); // only optimize
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /<b class="v-amber"[^>]*>–<\/b>/); // decide p50/p95 both dash
-  assert.equal((html.match(/v-amber[^>]*>–/g) || []).length, 2);
-  assert.match(html, /<b class="v-muted"[^>]*>–<\/b>/); // pass p95 dash
+  assert.match(html, /<b class="v-amber"[^>]*>–<\/b>/); // decide dash
+  assert.equal((html.match(/v-amber[^>]*>–/g) || []).length, 1);
+  assert.match(html, /<b class="v-muted"[^>]*>–<\/b>/); // pass dash
   assert.match(html, /<b class="v-green"[^>]*>500ms<\/b>/);
 });
 
@@ -534,4 +530,60 @@ test("KPI: percentile 正确性（按 action 分桶）", () => {
   assert.equal(agg.actionDuration.pass.p95, null);
   // 兼容别名：optimizeDuration = actionDuration.optimize
   assert.equal(agg.optimizeDuration.p95, 5000);
+});
+
+// ── .omp-pct-brief.md: 切换器 + 贯通 ─────────────────────────────────────────
+test("pct: ?pct=p99 取 p99 值与 label；非法 pct 回落 p95", () => {
+  const dir = mk([
+    ev({ durationMs: 100 }),
+    ev({ durationMs: 200 }),
+    ev({ durationMs: 300 }),
+    ev({ durationMs: 400 }),
+    ev({ durationMs: 5000 }),
+    ev({ action: "decide", reason: "new-task", durationMs: 42 }),
+  ]);
+  const evs = eventsByDay(dir);
+  const p99 = renderPage(aggregate(evs), evs, { pct: "p99" });
+  // ceil(0.99*5)-1 = index 4 → 5000; decide p99 = 42
+  assert.match(p99, /<b class="v-green"[^>]*>5s<\/b>/);
+  assert.match(p99, /<b class="v-amber"[^>]*>42ms<\/b>/);
+  assert.match(p99, />optimize p99<\/span>/);
+  assert.match(p99, /title="decide 耗时 p99：仅 action=decide 事件的 durationMs 分布"/);
+  // invalid falls back to p95 (ceil(0.95*5)-1 = 4 → 5000 too, so use label to distinguish)
+  const bad = renderPage(aggregate(evs), evs, { pct: "p42" });
+  assert.match(bad, />optimize p95<\/span>/);
+  assert.match(bad, /<a href="\?pct=p95" aria-current="true">p95<\/a>/, "fallback marks p95");
+  assert.match(bad, /<a href="\?pct=p95"[^>]*aria-current="true"/);
+});
+
+test("pct: 切换器 4 链接保留既有 query；aria-current 唯一", () => {
+  const dir = mk([ev({ durationMs: 100 }), ev({ action: "pass", reason: "not-turn", durationMs: 2 })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, { pct: "p50", action: "optimize", lang: "en" });
+  assert.match(html, /<a href="\?action=optimize&lang=en&pct=p50" aria-current="true">p50<\/a>/);
+  assert.match(html, /<a href="\?action=optimize&lang=en&pct=p95">p95<\/a>/);
+  assert.match(html, /<a href="\?action=optimize&lang=en&pct=p99">p99<\/a>/);
+  assert.match(html, /<a href="\?action=optimize&lang=en&pct=max">max<\/a>/);
+  assert.equal((html.match(/aria-current="true"[^>]*>(?:p50|p95|p99|max)<\/a>/g) || []).length, 1, "exactly one current pct link");
+});
+
+test("pct: 翻页与详情返回链接携带 pct", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => ev({ durationMs: i }));
+  const dir = mk(rows);
+  const evs = eventsByDay(dir);
+  const list = renderPage(aggregate(evs), evs, { pct: "p99" });
+  assert.match(list, /href="\?pct=p99&page=2"/); // next keeps pct
+  const detail = renderDetail(evs[0], { pct: "p99" });
+  assert.match(detail, /href="\?pct=p99"/); // back link keeps pct
+});
+
+test("pct: max 分位数取桶内最大值", () => {
+  const dir = mk([ev({ durationMs: 100 }), ev({ durationMs: 9000 }), ev({ durationMs: 500 })]);
+  const evs = eventsByDay(dir);
+  const agg = aggregate(evs);
+  assert.equal(agg.actionDuration.optimize.max, 9000);
+  assert.equal(agg.actionDuration.decide.max, null); // empty bucket
+  const html = renderPage(agg, evs, { pct: "max" });
+  assert.match(html, /<b class="v-green"[^>]*>9s<\/b>/);
+  assert.match(html, />optimize max<\/span>/);
 });

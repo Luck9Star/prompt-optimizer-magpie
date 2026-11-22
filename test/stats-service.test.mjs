@@ -163,7 +163,7 @@ test("stats-service: one denominator per experiment, version and arm; historical
   assert.equal(stats.total, 1);
   assert.deepEqual(stats.actionCounts, { optimize: 1 });
   assert.deepEqual(stats.reasonTop, { optimized: 1 });
-  assert.deepEqual(stats.optimizeDuration, { count: 1, p50: 12, p95: 12 });
+  assert.deepEqual(stats.optimizeDuration, { count: 1, p50: 12, p95: 12, p99: 12, max: 12 });
   assert.equal(stats.firstTs, detail.ts);
   assert.equal(stats.lastTs, detail.ts);
   assert.equal(stats.requestGroups.length, 5);
