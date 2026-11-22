@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail } from "../lib/stats-page.mjs";
+import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, shortId, reasonGroup, ACTION_TAG } from "../lib/stats-page.mjs";
 import { aggregate } from "../lib/stats-service.mjs";
 
 const mk = (rows, day = "2026-01-01") => {
@@ -172,4 +172,83 @@ test("stats-page: day filter option list matches available day files", () => {
   assert.match(html, /<option value="2026-01-01"/);
   assert.match(html, /<option value="2026-01-02"/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ── .omp-tags-brief.md 需求1-5（新增断言，不改已有断言） ────────────────────
+test("stats-page: 需求1 shortId = sha256(day:seq) 前 6 位小写 hex；detail 链接保留原始 id", () => {
+  assert.equal(shortId("2026-11-22:17"), "fead3d");
+  assert.ok(/^[0-9a-f]{6}$/.test(shortId("2026-01-01:0")));
+  assert.notEqual(shortId("2026-01-01:0"), shortId("2026-01-01:1"));
+  const dir = mk([ev(), ev({ action: "pass", reason: "not-turn" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  const link = html.match(/<a href="([^"]*detail=2026-01-01%3A1[^"]*)">([0-9a-f]{6})<\/a>/);
+  assert.ok(link, "detail link present");
+  assert.equal(link[2], shortId("2026-01-01:1"), "visible text is the short id");
+  assert.ok(!/>2026-01-01:1</.test(html), "raw day:seq not shown as cell text");
+});
+
+test("stats-page: 需求1 durationMs 列出现在事件明细表", () => {
+  const dir = mk([ev({ durationMs: 1234 }), ev({ action: "pass", reason: "not-turn", durationMs: 0 })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<th[^>]*>.*?耗时/s);
+  assert.match(html, /<td>1234<\/td>/);
+  assert.match(html, /<td>0<\/td>/);
+});
+
+test("stats-page: 需求2 action 列渲染彩色 tag（映射 + 渲染）", () => {
+  assert.equal(ACTION_TAG.optimize, "green");
+  assert.equal(ACTION_TAG.decide, "amber");
+  assert.equal(ACTION_TAG.pass, "muted");
+  assert.equal(ACTION_TAG.summary, "accent");
+  const dir = mk([ev(), ev({ action: "decide", reason: "followup" }), ev({ action: "pass", reason: "not-turn" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<span class="tag tag-green">optimize<\/span>/);
+  assert.match(html, /<span class="tag tag-amber">decide<\/span>/);
+  assert.match(html, /<span class="tag tag-muted">pass<\/span>/);
+});
+
+test("stats-page: 需求3 reason 分组纯函数：green/amber/red/后缀-失败/前缀-choice/未知灰", () => {
+  assert.equal(reasonGroup("optimized"), "green");
+  assert.equal(reasonGroup("merged-optimized"), "green");
+  assert.equal(reasonGroup("cache-hit"), "green");
+  assert.equal(reasonGroup("not-turn"), "amber");
+  assert.equal(reasonGroup("followup"), "amber");
+  assert.equal(reasonGroup("choice:whatever"), "amber"); // 前缀规则
+  assert.equal(reasonGroup("output-guard"), "red");
+  assert.equal(reasonGroup("merged-fail"), "red");       // 后缀规则
+  assert.equal(reasonGroup("never-seen-reason"), "muted"); // 未知归灰
+  const dir = mk([ev({ action: "pass", reason: "output-guard", durationMs: 5 })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<span class="tag tag-red">output-guard<\/span>/);
+});
+
+test("stats-page: 需求4 reason 图例在 <details> 中，按语义分组且双语", () => {
+  const dir = mk([ev()]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<details class="legend"><summary>/);
+  assert.ok(html.includes("改写已应用"), "green legend entry (zh)");
+  assert.ok(html.includes("rewrite applied"), "green legend entry (en)");
+  assert.ok(html.includes("改写超护栏已回退"), "red legend entry");
+  assert.ok(html.includes("非回合首条"), "amber legend entry");
+  assert.ok(html.includes("choice:*"), "suffix/prefix rule note");
+  const en = renderPage(aggregate(evs), evs, { lang: "en" });
+  assert.ok(en.includes("reason legend"), "en legend title rendered");
+});
+
+test("stats-page: 需求5 详情页空 orig/rewritten 显示解释文案；有内容时不显示", () => {
+  const noText = mk([ev({ action: "pass", reason: "not-turn" })]);
+  const evs1 = eventsByDay(noText);
+  const d1 = renderDetail(evs1[0], {});
+  assert.ok(d1.includes("此路径不记录原文"), "zh explanation shown");
+  const d1en = renderDetail(evs1[0], { lang: "en" });
+  assert.ok(d1en.includes("does not record prompt text"), "en explanation shown");
+  const withText = mk([ev({ orig: "原文", rewritten: "改写" })]);
+  const evs2 = eventsByDay(withText);
+  const d2 = renderDetail(evs2[0], {});
+  assert.ok(!d2.includes("此路径不记录原文"), "no explanation when text present");
 });
