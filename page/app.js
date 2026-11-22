@@ -19,25 +19,28 @@
       s.onerror = res; // a missing file is fine: fixed-port installs have no port.js
       document.head.appendChild(s);
     });
-  (async () => {
-    let port = FALLBACK_PORT;
+(async () => {
+    // server() writes port.js beside this file once bound (port 0
+    // auto-select): same-dir script loads pass the sandbox CSP, and it is
+    // the plugin's own source of truth. The host's hello.service falls
+    // back to the manifest port when the option is 0, so the bridge
+    // service URL and options.port only apply when port.js gave nothing.
+    await load("./port.js");
+    const v = Number(window.__POM_PORT__);
+    const runtime = Number.isInteger(v) && v > 0 && v < 65536 ? v : 0;
+    let port = runtime || FALLBACK_PORT;
     let service = "";
     try {
       await load("./_magpie/bridge.js");
       await window.magpie?.ready; // rejects outside a magpie frame — degrade
-      const opts = await window.magpie?.options?.get?.();
-      const v = Number(opts?.port);
-      if (Number.isInteger(v) && v > 0 && v < 65536) port = v;
-      const s = window.magpie?.service;
-      if (typeof s === "string" && /^https?:\/\//.test(s)) service = s;
+      if (!runtime) {
+        const s = window.magpie?.service;
+        if (typeof s === "string" && /^https?:\/\//.test(s)) service = s;
+        const opts = await window.magpie?.options?.get?.();
+        const p = Number(opts?.port);
+        if (!service && Number.isInteger(p) && p > 0 && p < 65536) port = p;
+      }
     } catch { /* stay on defaults */ }
-    // server() writes port.js beside this file once bound (port 0
-    // auto-select): same-dir script loads pass the sandbox CSP, and it works
-    // on desktop too, where magpie.service stays "" and the host's
-    // hello.service falls back to the manifest port when the option is 0.
-    await load("./port.js");
-    const v = Number(window.__POM_PORT__);
-    if (Number.isInteger(v) && v > 0 && v < 65536) port = v;
     const host = location.hostname || "127.0.0.1";
     location.replace(service || `http://${host}:${port}/`);
     clearTimeout(timer);
