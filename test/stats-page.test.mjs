@@ -205,9 +205,9 @@ test("stats-page: 需求2 action 列渲染彩色 tag（映射 + 渲染）", () =
   const dir = mk([ev(), ev({ action: "decide", reason: "followup" }), ev({ action: "pass", reason: "not-turn" })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /<span class="tag tag-green"><span data-lang="zh">改写<\/span><span data-lang="en">optimize<\/span><\/span>/);
-  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">判定<\/span><span data-lang="en">decide<\/span><\/span>/);
-  assert.match(html, /<span class="tag tag-muted"><span data-lang="zh">放行<\/span><span data-lang="en">pass<\/span><\/span>/);
+  assert.match(html, /<span class="tag tag-green"[^>]*><span data-lang="zh">改写<\/span><span data-lang="en">optimize<\/span><\/span>/);
+  assert.match(html, /<span class="tag tag-amber"[^>]*><span data-lang="zh">判定<\/span><span data-lang="en">decide<\/span><\/span>/);
+  assert.match(html, /<span class="tag tag-muted"[^>]*><span data-lang="zh">放行<\/span><span data-lang="en">pass<\/span><\/span>/);
 });
 
 test("stats-page: 需求3 reason 分组纯函数：green/amber/red/后缀-失败/前缀-choice/未知灰", () => {
@@ -223,7 +223,7 @@ test("stats-page: 需求3 reason 分组纯函数：green/amber/red/后缀-失败
   const dir = mk([ev({ action: "pass", reason: "output-guard", durationMs: 5 })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /<span class="tag tag-red">output-guard<\/span>/);
+  assert.match(html, /<span class="tag tag-red"[^>]*>output-guard<\/span>/);
 });
 
 test("stats-page: 需求4 reason 图例在 <details> 中，按语义分组且双语", () => {
@@ -267,24 +267,24 @@ test("i18n: 需求2 zh 模式 action/reason 显示中文标签", () => {
   const dir = mk([ev(), ev({ action: "pass", reason: "not-turn" }), ev({ action: "decide", reason: "followup" })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
-  assert.match(html, /<span class="tag tag-green"><span data-lang="zh">改写<\/span>/);
-  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">判定<\/span>/);
-  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">非回合首条<\/span>/); // reason reuses r_* legend entry
+  assert.match(html, /<span class="tag tag-green"[^>]*><span data-lang="zh">改写<\/span>/);
+  assert.match(html, /<span class="tag tag-amber"[^>]*><span data-lang="zh">判定<\/span>/);
+  assert.match(html, /<span class="tag tag-amber"[^>]*><span data-lang="zh">非回合首条<\/span>/); // reason reuses r_* legend entry
   assert.match(html, /<span class="chip"><span data-lang="zh">改写<\/span>/); // 动作分布胶囊
   assert.match(html, /<option value="not-turn"[^>]*><span data-lang="zh">非回合首条<\/span>/);
   const d = renderDetail(evs[0], {});
-  assert.match(d, /<th>action<\/th><td><span data-lang="zh">改写<\/span>/); // 详情元数据
+  assert.match(d, /<th>action<\/th><td><span class="tag tag-green"[^>]*><span data-lang="zh">改写<\/span>/); // 详情元数据
 });
 
 test("i18n: 需求2 en 模式显示原始英文值", () => {
   const dir = mk([ev(), ev({ action: "pass", reason: "not-turn" })]);
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, { lang: "en" });
-  assert.match(html, /<span class="tag tag-green"><span data-lang="zh">改写<\/span><span data-lang="en">optimize<\/span>/);
-  assert.match(html, /<span class="tag tag-amber"><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
+  assert.match(html, /<span class="tag tag-green"[^>]*><span data-lang="zh">改写<\/span><span data-lang="en">optimize<\/span>/);
+  assert.match(html, /<span class="tag tag-amber"[^>]*><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
   assert.match(html, /<option value="not-turn"[^>]*><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
   const d = renderDetail(evs[1], { lang: "en" });
-  assert.match(d, /<th>reason<\/th><td><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
+  assert.match(d, /<th>reason<\/th><td><span class="tag tag-amber"[^>]*><span data-lang="zh">非回合首条<\/span><span data-lang="en">not first turn<\/span>/);
 });
 
 test("i18n: 需求2 tag CSS class 仍基于原始值生成；筛选 option value 保持原始英文", () => {
@@ -292,7 +292,7 @@ test("i18n: 需求2 tag CSS class 仍基于原始值生成；筛选 option value
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
   // class 由原始 reason 值分组（output-guard → red），与中文文案无关
-  assert.match(html, /<span class="tag tag-red"><span data-lang="zh">改写超护栏已回退<\/span>/);
+  assert.match(html, /<span class="tag tag-red"[^>]*><span data-lang="zh">改写超护栏已回退<\/span>/);
   assert.ok(!/tag-(改写|放行)/.test(html), "no translated class names");
   // 服务端筛选依赖原始 value
   assert.match(html, /<option value="output-guard"/);
@@ -308,4 +308,52 @@ test("i18n: 需求1 详情链接与 KPI/Top10 不受排序影响", () => {
   assert.match(html, /detail=2026-01-01%3A2/, "原始 day:seq 寻址仍在");
   const byId = renderPage(stats, evs, { action: "pass" });
   assert.match(byId, /detail=2026-01-01%3A3/, "筛选后链接仍指向同一事件");
+});
+
+// ── .omp-tooltip-brief.md（title 悬浮注释；仅新增断言） ────────────────────────
+test("tooltip: 事件表与详情页 tag 均含 title 属性", () => {
+  const dir = mk([ev(), ev({ action: "pass", reason: "not-turn" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<span class="tag tag-green" title="/); // 列表 action tag
+  assert.match(html, /<span class="tag tag-amber" title="/); // 列表 reason tag
+  const d = renderDetail(evs[1], {});
+  assert.match(d, /<th>action<\/th><td><span class="tag tag-muted" title="/); // 详情 action
+  assert.match(d, /<th>reason<\/th><td><span class="tag tag-amber" title="/); // 详情 reason
+});
+
+test("tooltip: zh 中文说明 / en 英文说明（4 个 action 全覆盖）", () => {
+  const summaryEv = { ts: 1700000000000, agent: "claude", action: "summary", reason: "session-end", durationMs: 5, group: "g", experimentId: "E", version: "v1", turn: "first", mode: "auto", fallbackFrom: "", finalAction: "pass", fromCache: false, modelCalls: 0 };
+  const dir = mk([ev(), ev({ action: "decide", reason: "followup" }), ev({ action: "pass", reason: "not-turn" }), summaryEv]);
+  const evs = eventsByDay(dir);
+  const zh = renderPage(aggregate(evs), evs, {});
+  assert.match(zh, /tag tag-green" title="已调用模型改写提示词"/);
+  assert.match(zh, /tag tag-amber" title="仅执行是否优化的判定"/);
+  assert.match(zh, /tag tag-muted" title="原样放行，未调用模型"/);
+  // summary 事件不进事件明细表（进按分组聚合表），accent title 在详情页断言
+  assert.match(renderDetail(evs.find((e) => e.action === "summary"), {}), /tag tag-accent" title="会话汇总事件"/);
+  const en = renderPage(aggregate(evs), evs, { lang: "en" });
+  assert.match(en, /tag tag-green" title="model called to rewrite the prompt"/);
+  assert.match(en, /tag tag-amber" title="decision only: whether to optimize"/);
+  assert.match(en, /tag tag-muted" title="passed through as-is, no model call"/);
+  assert.match(renderDetail(evs.find((e) => e.action === "summary"), { lang: "en" }), /tag tag-accent" title="session summary event"/);
+});
+
+test("tooltip: reason 无 r_* 词条时 title 回退原始值", () => {
+  const dir = mk([ev({ reason: "some-brand-new-reason" })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, { lang: "en" });
+  assert.match(html, /tag tag-muted" title="some-brand-new-reason"/);
+  const d = renderDetail(evs[0], { lang: "en" });
+  assert.match(d, /<th>reason<\/th><td><span class="tag tag-muted" title="some-brand-new-reason"/);
+});
+
+test("tooltip: title 值经属性转义（含引号与尖括号的 reason）", () => {
+  const nasty = 'weird "reason" <b>x</b>';
+  const dir = mk([ev({ reason: nasty })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  // esc() 属性上下文：引号与尖括号都必须转成实体，不得裸露
+  assert.match(html, /title="weird &#34;reason&#34; &#60;b&#62;x&#60;\/b&#62;"/);
+  assert.ok(!/title="[^"]*<b>/.test(html), "no raw <b> inside title");
 });
