@@ -1,9 +1,26 @@
 {
   "name": "prompt-optimizer-magpie",
-  "version": "0.0.1",
+  "version": "0.2.1",
   "description": "Self-contained Magpie gateway request hook that rewrites vague first-turn prompts into precise ones before they reach your model. Fail-open by design.",
   "type": "module",
   "license": "AGPL-3.0-only",
+  "main": "./index.mjs",
+  "files": [
+    "hooks.mjs",
+    "index.mjs",
+    "serve.mjs",
+    "lib/",
+    "page/",
+    "templates/",
+    "docs/",
+    "README.md",
+    "README_EN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "serve": "node serve.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Luck9Star/prompt-optimizer-magpie.git"
@@ -17,9 +34,59 @@
     "llm-gateway"
   ],
   "magpie": {
-    "hooks": "./hooks.mjs"
+    "hooks": "./hooks.mjs",
+    "page": {
+      "title": "Prompt optimizer stats",
+      "titles": {
+        "en": "Prompt optimizer stats",
+        "zh": "提示词优化统计"
+      },
+      "file": "page/index.html",
+      "service": {
+        "port": 3497,
+        "option": "port"
+      }
+    },
+    "options": {
+      "enabled": true,
+      "dryRun": true,
+      "deciderGroup": "group/route-decider",
+      "optimizeGroup": "group/prompt-optimize",
+      "optimizerMode": "auto",
+      "rollout": null,
+      "overrides": [],
+      "deciderFallback": "rule",
+      "bypassPrefix": [
+        "!!",
+        "##"
+      ],
+      "bypassModels": [],
+      "bypassAgents": [],
+      "allowedOrigins": [],
+      "skipToolless": true,
+      "cacheTtlMs": 60000,
+      "logRewrites": true,
+      "logRewriteChars": 600,
+      "logSkips": true,
+      "logOptimizes": true,
+      "debugDump": false,
+      "deciderTimeoutMs": 1500,
+      "optimizeTimeoutMs": 15000,
+      "gatewayTimeoutMs": 25000,
+      "gatewayUrl": "http://127.0.0.1:3425",
+      "port": 0,
+      "bind": "127.0.0.1",
+      "configPage": false,
+      "minChars": 6,
+      "maxChars": 12000
+    }
   },
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.2",
+    "node": ">=20"
+  },
+  "homepage": "https://github.com/Luck9Star/prompt-optimizer-magpie#readme",
+  "bugs": {
+    "url": "https://github.com/Luck9Star/prompt-optimizer-magpie/issues"
   }
 }

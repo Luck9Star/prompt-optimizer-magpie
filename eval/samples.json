@@ -1,0 +1,34 @@
+[
+  {
+    "id": "draft",
+    "kind": "vague-first",
+    "expectPass": false,
+    "messages": [{ "role": "user", "content": "把这条通知整理一下：周五下午四点提交表格，联系人是 [REDACTED]。" }]
+  },
+  {
+    "id": "fields",
+    "kind": "clear-first",
+    "expectPass": true,
+    "messages": [{ "role": "user", "content": "只列出这两个字段名，每行一个并保持原顺序：`user_id`、`status`。不要解释或更改任何文件。" }]
+  },
+  {
+    "id": "shorter",
+    "kind": "followup",
+    "expectPass": true,
+    "messages": [
+      { "role": "user", "content": "写一句发布通知，周五下午停机维护。" },
+      { "role": "assistant", "content": "周五下午系统将停机维护，请提前保存工作。" },
+      { "role": "user", "content": "把上一句再压缩一些，保留时间。" }
+    ]
+  },
+  {
+    "id": "new-topic",
+    "kind": "thread-new",
+    "expectPass": false,
+    "messages": [
+      { "role": "user", "content": "请概括周会安排。" },
+      { "role": "assistant", "content": "周会将在周二举行。" },
+      { "role": "user", "content": "另外帮我写个现场指引：访客先到前台，再去二楼。" }
+    ]
+  }
+]

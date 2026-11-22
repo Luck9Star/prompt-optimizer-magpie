@@ -1,0 +1,15 @@
+{
+  "model": "claude-sonnet-4-6",
+  "stream": true,
+  "tools": [{ "name": "Bash", "description": "run a command", "input_schema": { "type": "object" } }],
+  "messages": [
+    { "role": "user", "content": [{ "type": "text", "text": "Fix the failing test in auth.spec.ts" }] },
+    { "role": "assistant", "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "cmd": "npm test" } }] },
+    { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "exit 0\n3 passed" }] },
+    { "role": "assistant", "content": [{ "type": "text", "text": "All tests pass now." }] },
+    { "role": "user", "content": [
+      { "type": "text", "text": "<system-reminder>Today: 2026-11-20. cwd unchanged.</system-reminder>" },
+      { "type": "text", "text": "再帮我把README改成英文，注意保留命令示例" }
+    ] }
+  ]
+}

@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Magpie plugin sandbox page (design.md §6): sandbox="allow-scripts".
+     Logic lives in app.js — the sandbox CSP allows same-dir scripts but
+     blocks inline ones. app.js discovers the service URL via the bridge
+     (_magpie/bridge.js, served beside this page) and navigates there. -->
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>提示词优化统计</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid; place-items: center;
+      font: 13px/1.6 "Aptos", "Segoe UI Variable", "Noto Sans SC", "PingFang SC", sans-serif;
+      color: var(--magpie-fg, CanvasText); background: var(--magpie-bg, Canvas);
+    }
+    .waiting { display: grid; gap: 6px; max-width: 460px; padding: 0 20px; text-align: center; color: var(--magpie-muted, GrayText); }
+    .waiting b { color: var(--magpie-fg, CanvasText); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="waiting">
+    <b>提示词优化统计</b>
+    <div id="said">正在连接本地统计服务…</div>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>
