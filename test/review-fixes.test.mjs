@@ -69,3 +69,13 @@ test("index.mjs server(): port 0 must survive (ephemeral), not become 3497", asy
   assert.doesNotMatch(src, /Number\(options\?\.port\) \|\| 3497/);
   assert.match(src, /Number\.isFinite\(Number\(options\?\.port\)\) \? Number\(options\.port\) : 3497/);
 });
+
+test("index.mjs server(): port 0 binds ephemeral, returns the actual port, page/port.js carries it", async (t) => {
+  const { readFileSync } = await import("node:fs");
+  const mod = await import("../index.mjs");
+  t.after(() => mod.__testClose());
+  const out = await mod.default.server({}, { port: 0 });
+  assert.ok(Number.isInteger(out.port) && out.port >= 1 && out.port < 65536, `actual port returned: ${out.port}`);
+  const page = readFileSync(new URL("../page/port.js", import.meta.url), "utf8");
+  assert.match(page, new RegExp(`window\\.__POM_PORT__ = ${out.port};`));
+});

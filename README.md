@@ -101,7 +101,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `logSkips` | `true` | `false` 时不记录常规 `pass` 事件（not-turn / self-loop / no-tools 等噪音）；**失败类始终记录**（optimize-fail / decider-fail / optimize-empty / error），排障不瞎 |
 | `logOptimizes` | `true` | `false` 时不记录成功路径的 `optimize` / `decide` 事件（optimized / cache-hit / dry-run / followup 等）；失败类不受此开关影响 |
 
-| `port` / `bind` | `0` / `127.0.0.1` | 统计服务监听：`port=0` OS 自动分配；`bind` 默认仅本机回环。**开 LAN 访问（如 `0.0.0.0`）= stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）对内网可见**，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
+| `port` / `bind` | `0` / `127.0.0.1` | 统计服务监听：`port=0` OS 自动分配（绑定后实际端口写入 `page/port.js`，页面自动发现，适合 in-app 页面）；固定端口默认 3497，**远程经 magpie web 访问时必须用固定端口**（宿主代理只认 manifest 端口）。`bind` 默认仅本机回环。**开 LAN 访问（如 `0.0.0.0`）= stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）对内网可见**，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
 
 ## 日志布局与保留（按天分文件，7 天清理）
 
