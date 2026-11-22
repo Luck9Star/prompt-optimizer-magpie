@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -26,6 +29,8 @@ jobs:
       - run: npm test
 
   publish:
+    # only for real tag pushes (and manual dispatch); PR/push-to-main runs stop at the test job
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     steps:
