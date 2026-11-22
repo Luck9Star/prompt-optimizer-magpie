@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, shortId, reasonGroup, ACTION_TAG } from "../lib/stats-page.mjs";
+import { listDays, eventsByDay, parseDetailId, filterEvents, paginate, renderPage, renderDetail, renderConfigPage, fmtDur, shortId, reasonGroup, ACTION_TAG } from "../lib/stats-page.mjs";
 import { aggregate } from "../lib/stats-service.mjs";
 
 const mk = (rows, day = "2026-01-01") => {
@@ -212,8 +212,8 @@ test("stats-page: 需求1 durationMs 列出现在事件明细表", () => {
   const evs = eventsByDay(dir);
   const html = renderPage(aggregate(evs), evs, {});
   assert.match(html, /<th[^>]*>.*?耗时/s);
-  assert.match(html, /<td style="--label:var\(--label-6\)">1234<\/td>/);
-  assert.match(html, /<td style="--label:var\(--label-6\)">0<\/td>/);
+  assert.match(html, /<td style="--label:var\(--label-6\)">1\.2s<\/td>/); // 1234ms → floored 1dp
+  assert.match(html, /<td style="--label:var\(--label-6\)">0ms<\/td>/);  // pass rows show explicit 0
 });
 
 test("stats-page: 需求2 action 列渲染彩色 tag（映射 + 渲染）", () => {
@@ -427,4 +427,60 @@ test("redesign hard constraints: script tags byte-identical, zero JS additions",
     assert.ok(!/fetch\(|XMLHttpRequest/.test(page), `${name}: no fetch/XHR`);
     assert.ok(!/\son[a-z]+="/.test(page), `${name}: no inline event handlers`);
   }
+});
+
+// ── .omp-details-brief.md ───────────────────────────────────────────────────
+test("details A: fmtDur 自适应单位（ms→s，floor 一位小数，去尾零）", () => {
+  assert.equal(fmtDur(862), "862ms");
+  assert.equal(fmtDur(999), "999ms");
+  assert.equal(fmtDur(6031), "6s");
+  assert.equal(fmtDur(9499), "9.4s");
+  assert.equal(fmtDur(6000), "6s");
+  assert.equal(fmtDur(1234), "1.2s");
+  assert.equal(fmtDur(0), "0ms");
+  assert.equal(fmtDur(undefined), "–");
+  assert.equal(fmtDur(null), "–");
+});
+
+test("details A: KPI p95 与详情页耗时人性化", () => {
+  const dir = mk([ev({ durationMs: 9499 })]);
+  const evs = eventsByDay(dir);
+  const html = renderPage(aggregate(evs), evs, {});
+  assert.match(html, /<b>9\.4s<\/b>/);
+  assert.ok(!/9499 ms/.test(html), "no raw ms-with-space suffix");
+  const d = renderDetail(evs[0], {});
+  assert.match(d, /<th>durationMs<\/th><td>9\.4s<\/td>/);
+});
+
+test("details B: 11 个配置字段双语 label + hint（非裸 key）", () => {
+  const cfg = renderConfigPage({ current: {}, lang: "zh" });
+  for (const key of ["enabled", "dryRun", "optimizerMode", "minChars", "maxChars", "logSkips", "logOptimizes", "deciderGroup", "optimizeGroup", "deciderTimeoutMs", "optimizeTimeoutMs"]) {
+    assert.ok(cfg.includes(`name="${key}"`), key);
+  }
+  // 抽 4 个断言 label 是 T 词条而非裸 key
+  assert.match(cfg, /启用插件/);
+  assert.match(cfg, /演练模式（只记录不替换）/);
+  assert.match(cfg, /判定模型组/);
+  assert.match(cfg, /改写超时（毫秒）/);
+  // hints 渲染且双语
+  assert.match(cfg, /总开关，关闭后 hook 直接放行，不调用任何模型/);
+  assert.match(cfg, /master switch; when off the hook passes every request through/);
+  assert.match(cfg, /超时放行原文（默认 15000）/); // 与 hooks.mjs DEFAULTS 一致
+  assert.match(cfg, /optimizer call timeout in ms; timeout passes the original through \(default 15000\)/);
+  assert.ok(!/<span class="k">deciderTimeoutMs<\/span>/.test(cfg), "no bare key label");
+});
+
+test("details C: 模型组下拉注入 providers.json groups；缺失静默降级", () => {
+  const groups = ["route-decider", "prompt-optimize"];
+  const cfg = renderConfigPage({ current: { deciderGroup: "group/route-decider" }, lang: "zh", groups });
+  assert.match(cfg, /<select name="deciderGroup">/);
+  assert.match(cfg, /<option value="group\/route-decider" selected>group\/route-decider<\/option>/);
+  assert.match(cfg, /<option value="group\/prompt-optimize">group\/prompt-optimize<\/option>/);
+  assert.match(cfg, /<select name="optimizeGroup">/);
+  // 当前值不在列表时仍可选中（fallback option）
+  const cfg2 = renderConfigPage({ current: { optimizeGroup: "group/custom-gpu" }, lang: "zh", groups });
+  assert.match(cfg2, /<option value="group\/custom-gpu" selected>group\/custom-gpu<\/option>/);
+  // 缺 providers.json：不 throw，退化为仅空选项+当前值
+  const cfg3 = renderConfigPage({ current: { deciderGroup: "group/x" }, lang: "zh", groups: [] });
+  assert.match(cfg3, /<select name="deciderGroup"><option value=""><\/option><option value="group\/x" selected>group\/x<\/option><\/select>/);
 });
