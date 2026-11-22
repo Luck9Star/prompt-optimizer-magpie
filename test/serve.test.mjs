@@ -62,7 +62,7 @@ test("serve: service.json lifecycle + empty stats endpoints", async () => {
     assert.equal(info.pid, child.pid);
     assert.ok(info.port > 0, "ephemeral port assigned");
     assert.ok(info.startedAt > 0);
-    assert.equal(info.version, "0.2.0");
+    assert.equal(info.version, (await import("../package.json", { with: { type: "json" } })).default.version);
 
     const stats = await once(info.port, "/api/stats");
     assert.equal(stats.status, 200);
