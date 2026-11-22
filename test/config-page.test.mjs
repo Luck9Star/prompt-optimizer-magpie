@@ -157,3 +157,69 @@ test("config unit: readPluginsJson error paths", () => {
   assert.equal(readPluginsJson(nospec).error, "cfgErrNoSpec");
   rmSync(dir, { recursive: true, force: true });
 });
+
+// .omp-spec-brief.md — fuzzy spec match: npm name / npm: prefix / path installs
+const mkPluginsSpecs = (specs) => {
+  const dir = mkdtempSync(join(tmpdir(), "pom-spec-"));
+  const file = join(dir, "plugins.json");
+  writeFileSync(file, JSON.stringify({ plugins: specs.map((spec) => ({ spec, options: { enabled: true } })) }));
+  return { dir, file };
+};
+
+test("spec match: all five install forms hit", () => {
+  for (const spec of [
+    "prompt-optimizer-magpie@latest",
+    "npm:prompt-optimizer-magpie",
+    "npm:prompt-optimizer-magpie@0.2.3",
+    "/opt/x/prompt-optimizer-magpie",
+    "/Users/me/dev/prompt-optimizer-magpie/",
+  ]) {
+    const { dir, file } = mkPluginsSpecs(["/root/other-plugin", spec, "some-other-plugin@1.0.0"]);
+    const r = readPluginsJson(file);
+    assert.equal(r.error, undefined, spec);
+    assert.equal(r.entry.spec, spec, spec);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spec match: unrelated specs miss → cfgErrNoSpec", () => {
+  const { dir, file } = mkPluginsSpecs(["/root/other-plugin", "some-other-plugin@1.0.0"]);
+  assert.equal(readPluginsJson(file).error, "cfgErrNoSpec");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("spec match: POM_PLUGIN_SPEC set → literal equality only", () => {
+  assert.ok(process.env.POM_PLUGIN_SPEC === undefined, "test requires env unset");
+  const { dir, file } = mkPluginsSpecs(["prompt-optimizer-magpie@latest"]);
+  process.env.POM_PLUGIN_SPEC = "/root/prompt-optimizer-magpie";
+  try {
+    // npm form no longer hits when an explicit spec is configured
+    assert.equal(readPluginsJson(file).error, "cfgErrNoSpec");
+    const dir2 = mkdtempSync(join(tmpdir(), "pom-spec2-"));
+    const file2 = join(dir2, "plugins.json");
+    writeFileSync(file2, JSON.stringify({ plugins: [{ spec: "/root/prompt-optimizer-magpie", options: {} }] }));
+    assert.equal(readPluginsJson(file2).error, undefined, "literal path still hits");
+    rmSync(dir2, { recursive: true, force: true });
+  } finally {
+    delete process.env.POM_PLUGIN_SPEC;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spec match: multi-hit priority npm: > bare/versioned > path", () => {
+  const specs = [
+    "/Users/me/dev/prompt-optimizer-magpie",
+    "prompt-optimizer-magpie@0.2.1",
+    "npm:prompt-optimizer-magpie@latest",
+  ];
+  const { dir, file } = mkPluginsSpecs(specs);
+  assert.equal(readPluginsJson(file).entry.spec, "npm:prompt-optimizer-magpie@latest");
+  rmSync(dir, { recursive: true, force: true });
+
+  const { dir: d2, file: f2 } = mkPluginsSpecs(["prompt-optimizer-magpie@0.2.1", "/opt/x/prompt-optimizer-magpie"]);
+  assert.equal(readPluginsJson(f2).entry.spec, "prompt-optimizer-magpie@0.2.1");
+  rmSync(d2, { recursive: true, force: true });
+  const { dir: d3, file: f3 } = mkPluginsSpecs(["prompt-optimizer-magpie", "/opt/x/prompt-optimizer-magpie"]);
+  assert.equal(readPluginsJson(f3).entry.spec, "prompt-optimizer-magpie");
+  rmSync(d3, { recursive: true, force: true });
+});
