@@ -20,6 +20,9 @@ const DEFAULTS = {
   minChars: 6,
   maxChars: 12000,
   bypassPrefix: ["!!", "##"],
+  // 机器注入包装（Hermes out-of-band、@file 展开等）不是人类输入，改写它们
+  // 只会破坏协议语义且必然触发 output-guard。命中即整条放行，不进优化。
+  bypassWrappers: ["<system-notice>"],
   bypassModels: [],
   bypassAgents: [],
   allowedOrigins: [],
@@ -113,6 +116,10 @@ export async function onRequest(body, ctx) {
     }
     const prefixes = [].concat(o.bypassPrefix).filter(Boolean);
     if (typeof (ctx && ctx.query) === "string" && prefixes.some((p) => ctx.query.trimStart().startsWith(p))) return pass("bypass-prefix");
+    // Machine-injected wrappers (bypassWrappers) anywhere in the newest turn:
+    // they wrap protocol text the rewrite must not touch.
+    const wrappers = [].concat(o.bypassWrappers || []).filter(Boolean);
+    if (typeof (ctx && ctx.query) === "string" && wrappers.length && wrappers.some((w) => ctx.query.includes(w))) return pass("bypass-wrapper");
 
     const protocol = (ctx && ctx.protocol) || "chat";
     if (o.skipToolless && !hasTools(body, protocol)) return pass("no-tools");
@@ -129,6 +136,7 @@ export async function onRequest(body, ctx) {
       } catch {}
     }
     if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
+    if (wrappers.length && wrappers.some((w) => orig.includes(w))) return pass("bypass-wrapper");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length, inUnits: countUnits(orig) });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length, inUnits: countUnits(orig) });
 
