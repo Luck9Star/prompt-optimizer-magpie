@@ -147,6 +147,9 @@ export async function onRequest(body, ctx) {
     const input = { ...size, origText: orig };
     if (protocol === "responses" && body.previous_response_id) return pass("no-decider-followup", size);
     const thread = hasAssistantReply(body, protocol);
+    // Floor (origUnits×0.4) above the ceiling means no rewrite could ever
+    // pass the guard: skip before spending a model call.
+    if (size.inUnits * 0.4 > guardCeiling(size.inUnits, o)) return pass("input-too-long", size);
     const override = matchingOverride(o.overrides, ctx?.agent, body.model);
     if (!thread && override?.optimizerMode) o.optimizerMode = override.optimizerMode;
     const remaining = () => override?.budgetMs === undefined ? Infinity : override.budgetMs - (Date.now() - t0);
@@ -256,7 +259,7 @@ export async function onRequest(body, ctx) {
 
     const origUnits = countUnits(orig), outUnits = countUnits(out);
     const audit = { ...input, out: out.length, outUnits, newText: out, markCache: fromCache };
-    const maxUnits = Math.min(Math.max(origUnits * (o.guardRatioLimit || 10), 60), 2000);
+    const maxUnits = guardCeiling(origUnits, o);
     if (outUnits < origUnits * 0.4) return pass("output-guard-short", audit);
     if (outUnits > maxUnits) return pass("output-guard-long", audit);
     if (!preservesTokens(orig, out)) return pass("output-guard-tokens", audit);
@@ -342,6 +345,10 @@ async function completion(o, system, user, signal) {
 }
 
 const cjkRatio = (s) => ((s.match(/[㐀-鿿]/g) || []).length) / Math.max(s.length, 1);
+
+// Output-guard ceiling (hooks.mjs guardRatioLimit) and the pre-call
+// input-too-long check share this one formula.
+const guardCeiling = (origUnits, o) => Math.min(Math.max(origUnits * (o.guardRatioLimit || 10), 60), 2000);
 
 // Calls in flight retain their window's object. After expiry their completions
 // cannot change the next window's count or extend the old deadline.
