@@ -1,6 +1,6 @@
 // onRequest gate chain (design.md §4). Every failure path returns undefined:
 // fail-open — the plugin must never block or corrupt a request.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
@@ -19,15 +19,11 @@ const AUDIT_FIELDS = [
   "decideVerdict", "decideConfidence", "deciderError", "deciderHttpStatus",
   "errorKind", "errorMsg", "bypassPrefixHit", "httpStatus", "budgets",
 ];
-// gatewayTimeoutMs is a declaration the gateway reads from package.json;
-// it deliberately is NOT a runtime DEFAULTS entry. The catch keeps the hook
-// loadable when hooks.mjs is copied into a temp install without package.json
-// (debugDump regression test), using the declared default.
-const GATEWAY_TIMEOUT_MS = (() => {
-  try {
-    return JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).magpie.options.gatewayTimeoutMs;
-  } catch { return 25000; }
-})();
+// Host budget when gatewayTimeoutMs is NOT declared in this plugin's options.
+// The gateway reads it from plugins.json options only (never from the
+// package.json default) and gives an undeclared hook one second — official
+// docs: "Each hook defaults to one second"; measured 993–1006 ms on .70.
+const HOST_BUDGET_DEFAULT_MS = 1000;
 const errMsg = (error) => redact(String(error?.message ?? "")).slice(0, 120);
 const errKind = (error) => error?.name;
 const DEFAULTS = {
@@ -147,7 +143,7 @@ export async function onRequest(body, ctx) {
   // arithmetic. No timeout behavior changes; pass() mapping stays as-is.
   const passHostAbort = () => {
     const d = o.deciderTimeoutMs, opt = o.optimizeTimeoutMs;
-    const gw = Number.isFinite(o.gatewayTimeoutMs) ? o.gatewayTimeoutMs : GATEWAY_TIMEOUT_MS;
+    const gw = Number.isFinite(o.gatewayTimeoutMs) ? o.gatewayTimeoutMs : HOST_BUDGET_DEFAULT_MS;
     if (d + opt + 1000 > gw) return pass("budget-short", { budgets: `${d}+${opt}>${gw}` });
     return pass("host-abort");
   };

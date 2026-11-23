@@ -1,6 +1,9 @@
 // 0.2.8 T4: ctx.signal aborted (host cancelled the hook) is not a gateway
-// failure: pass("host-abort"), report "skipped", no *-fail reason, no
-// breaker count, no "unavailable".
+// failure: an aborted request passes through ("skipped"), reports no *-fail
+// reason, never counts toward the breaker and never says "unavailable".
+// Since 0.2.9 R5 an abort additionally checks the timeout budget: with the
+// default 1500/15000 timeouts and gatewayTimeoutMs undeclared (host default
+// 1 s) the reason is budget-short, so the abort tests below declare 25000.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -17,7 +20,7 @@ const events = () => { try { return readFileSync(dayFile, "utf8").trim().split("
 const REWRITE = "这是按照专业模板改写后的完整中文提示词内容，长度足够通过护栏检查要求。";
 const MERGED = `[tpl:professional]\n${REWRITE}`;
 const singleUser = (text) => ({ tools: [{}], messages: [{ role: "user", content: text }] });
-const ctxWith = (url, signal, opts) => ({ protocol: "chat", agent: "t", kind: "", query: "", signal, options: { gatewayUrl: url, cacheFile: join(dir, "cache.json"), statsDir: dir, ...opts } });
+const ctxWith = (url, signal, opts) => ({ protocol: "chat", agent: "t", kind: "", query: "", signal, options: { gatewayTimeoutMs: 25000, gatewayUrl: url, cacheFile: join(dir, "cache.json"), statsDir: dir, ...opts } });
 
 // Hang the gateway so the request is in flight when the host aborts.
 async function abortDuring(gw, body, opts, afterMs = 30) {
@@ -32,7 +35,7 @@ async function abortDuring(gw, body, opts, afterMs = 30) {
 test("T4: auto path — abort during the decider call → host-abort, skipped, no decider-fail-rule", async () => {
   const gw = await mockGateway({ hang: ["/v1/systemone"] });
   try {
-    const { out, reports } = await abortDuring(gw, singleUser("帮我把这个模糊的需求优化成具体的提示词描述"), { deciderGroup: "group/route-decider", dryRun: false });
+    const { out, reports } = await abortDuring(gw, singleUser("帮我把这个模糊的需求优化成具体的提示词描述"), { deciderGroup: "group/route-decider", dryRun: false, gatewayTimeoutMs: 25000 });
     assert.equal(out, undefined);
     assert.equal(reasonGroup("host-abort"), "amber");
     const evs = events();
@@ -45,7 +48,7 @@ test("T4: auto path — abort during the decider call → host-abort, skipped, n
 test("T4: auto path — abort during the optimizer call → host-abort, no optimize-fail", async () => {
   const gw = await mockGateway({ hang: ["/v1/chat/completions"] });
   try {
-    const { out, reports } = await abortDuring(gw, singleUser("帮我把这个模糊的需求优化成具体的提示词描述"), { deciderGroup: "group/route-decider", dryRun: false });
+    const { out, reports } = await abortDuring(gw, singleUser("帮我把这个模糊的需求优化成具体的提示词描述"), { deciderGroup: "group/route-decider", dryRun: false, gatewayTimeoutMs: 25000 });
     assert.equal(out, undefined);
     const evs = events();
     assert.ok(evs.some((e) => e.reason === "host-abort"));

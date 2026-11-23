@@ -1,6 +1,9 @@
 // 0.2.9 R5: timeout-budget selfcheck. Only requests that already ended in
 // host-abort check the arithmetic; no timeout behavior changes and pass()'s
 // unavailable mapping is untouched (budget-short reports "skipped").
+// gatewayTimeoutMs is NOT in DEFAULTS: the gateway reads it from plugins.json
+// options only and gives an undeclared hook one second. Tests therefore pass
+// it explicitly whenever a case needs a budget that is "sufficient".
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -31,9 +34,21 @@ async function aborted(opts, url = "http://127.0.0.1:1") {
   return { out, reports };
 }
 
+test("R5: undeclared gatewayTimeoutMs → host default 1000 → budget-short", async () => {
+  const n = before();
+  const { out, reports } = await aborted({ dryRun: false });
+  assert.equal(out, undefined, "fail-open");
+  const ev = since(n).find((e) => e.reason === "budget-short");
+  assert.ok(ev, `budget-short recorded: ${JSON.stringify(since(n).map((e) => e.reason))}`);
+  assert.equal(ev.budgets, "1500+15000>1000");
+  assert.ok(!since(n).some((e) => e.reason === "host-abort"), "no host-abort when the budget is short");
+  assert.deepEqual(reports, ["skipped"], "pass() mapping unchanged");
+  assert.ok(!since(n).some((e) => /-fail|^error$/.test(e.reason)), "not a failure");
+});
+
 test("R5: budget short → budget-short with budgets arithmetic", async () => {
   const n = before();
-  const { out, reports } = await aborted({ deciderTimeoutMs: 2500, optimizeTimeoutMs: 25000, dryRun: false });
+  const { out, reports } = await aborted({ deciderTimeoutMs: 2500, optimizeTimeoutMs: 25000, gatewayTimeoutMs: 25000, dryRun: false });
   assert.equal(out, undefined, "fail-open");
   const ev = since(n).find((e) => e.reason === "budget-short");
   assert.ok(ev, `budget-short recorded: ${JSON.stringify(since(n).map((e) => e.reason))}`);
@@ -59,11 +74,21 @@ test("R5: budget sufficient → still host-abort", async () => {
   assert.ok(!since(n).some((e) => "budgets" in e), "no budgets field");
 });
 
-test("R5: DEFAULTS (1500+15000+1000 <= package.json 25000) does not trigger", async () => {
+test("R5: DEFAULTS with gatewayTimeoutMs declared 25000 does not trigger", async () => {
   const n = before();
-  await aborted({ dryRun: false });
+  await aborted({ dryRun: false, gatewayTimeoutMs: 25000 });
   assert.equal(since(n).find((e) => e.action === "pass")?.reason, "host-abort");
-  assert.ok(!since(n).some((e) => e.reason === "budget-short"), "default config safe");
+  assert.ok(!since(n).some((e) => e.reason === "budget-short"), "declared default config safe");
+});
+
+// Even a request that never reached the gateway is short by definition when
+// the key is missing: catching the mis-deploy is the whole point of R5.
+test("R5: small plugin timeouts with the key undeclared still report budget-short", async () => {
+  const n = before();
+  await aborted({ deciderTimeoutMs: 500, optimizeTimeoutMs: 500, dryRun: false });
+  const ev = since(n).find((e) => e.reason === "budget-short");
+  assert.ok(ev);
+  assert.equal(ev.budgets, "500+500>1000");
 });
 
 test("R5: boundary — equality is NOT short", async () => {
@@ -77,7 +102,7 @@ test("R5: abort in flight (hanging decider) also gets budget-short", async () =>
   try {
     const n = before();
     const ac = new AbortController();
-    const p = onRequest(singleUser(PROMPT), ctxWith(gw.url, ac.signal, { deciderGroup: "group/route-decider", deciderTimeoutMs: 2500, optimizeTimeoutMs: 25000, dryRun: false }));
+    const p = onRequest(singleUser(PROMPT), ctxWith(gw.url, ac.signal, { deciderGroup: "group/route-decider", deciderTimeoutMs: 2500, optimizeTimeoutMs: 25000, gatewayTimeoutMs: 25000, dryRun: false }));
     setTimeout(() => ac.abort(), 30);
     assert.equal(await p, undefined);
     const ev = since(n).find((e) => e.reason === "budget-short");
