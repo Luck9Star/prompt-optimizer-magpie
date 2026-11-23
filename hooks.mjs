@@ -135,6 +135,9 @@ export async function onRequest(body, ctx) {
     const lu = lastUserText(body, protocol);
     if (!lu) return pass("no-user-text");
     const orig = lu.text;
+    // Pre-check that the span is replaceable (e.g. the text is split over
+    // two content parts) before spending a model call on it.
+    if (!replaceSpan(body, protocol, lu.index, orig, orig)) return pass("no-span");
     if (o.debugDump) {
       try {
         const path = typeof o.debugDump === "string" ? o.debugDump : join(dirname(fileURLToPath(import.meta.url)), "debug-dump.log");

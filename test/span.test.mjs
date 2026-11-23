@@ -46,3 +46,30 @@ test("span: gemini parts replace only text part", () => {
   assert.deepEqual(out.contents[0].parts[2].text, "NEW");
   assert.ok(out.contents[0].parts[1].functionResponse);
 });
+
+// 0.2.8 T5: the no-span verdict must come BEFORE the optimizer call.
+import { mockGateway } from "./helpers.gateway.mjs";
+const ctx = (url) => ({ protocol: "chat", agent: "t", kind: "", query: "", options: { gatewayUrl: url, deciderGroup: "", dryRun: false } });
+const REWRITE = "这是按照专业模板改写后的完整中文提示词内容，长度足够通过护栏检查要求。";
+
+test("span T5: text split over two content parts → no-span with zero gateway calls", async () => {
+  const gw = await mockGateway({ optimize: REWRITE });
+  try {
+    const reports = [];
+    const body = { tools: [{}], messages: [{ role: "user", content: [{ type: "text", text: "帮我把这个模糊的需求" }, { type: "text", text: "优化成具体的提示词描述" }] }] };
+    const out = await onRequest(body, { ...ctx(gw.url), report: (c) => reports.push(c) });
+    assert.equal(out, undefined);
+    assert.equal(gw.seen.length, 0, "optimizer never called");
+    assert.deepEqual(reports, ["skipped"]);
+  } finally { gw.close(); }
+});
+
+test("span T5: single text part still optimizes normally", async () => {
+  const gw = await mockGateway({ optimize: REWRITE });
+  try {
+    const body = { tools: [{}], messages: [{ role: "user", content: [{ type: "text", text: "帮我把这个模糊的需求优化成具体的提示词描述" }] }] };
+    const out = await onRequest(body, ctx(gw.url));
+    assert.equal(out.messages[0].content[0].text, REWRITE);
+    assert.equal(gw.seen.length, 1);
+  } finally { gw.close(); }
+});
