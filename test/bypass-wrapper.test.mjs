@@ -23,3 +23,17 @@ test("clean human text is not affected by wrapper rule", async () => {
   // we only assert it didn't crash and passed.
   assert.equal(out, undefined);
 });
+
+import { preservesTokens } from "../lib/rewrite-guard.mjs";
+
+test("optimizer adding backticks around bare text passes the guard", () => {
+  const orig = "探索 /workspace/aimp/devops-mcp-server/src/main 全部源码，输出文件:行号例子";
+  const out = "遍历 `/workspace/aimp/devops-mcp-server/src/main` 源码，每项给 `文件:行号` 例子";
+  assert.equal(preservesTokens(orig, out), true);
+});
+
+test("dropping an original backticked token still trips the guard", () => {
+  const orig = "看 `src/main/App.java` 的注册逻辑";
+  const out = "看注册逻辑"; // backticked identifier swallowed
+  assert.equal(preservesTokens(orig, out), false);
+});
