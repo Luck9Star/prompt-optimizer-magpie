@@ -11,8 +11,8 @@ import { get, createServer } from "node:http";
 const ROOT = new URL("..", import.meta.url).pathname;
 
 
-// A free TCP port for tests — hardcoded 3497 hangs wherever magpie's plugin
-// host holds it (omp review [高-1]).
+// A free TCP port for tests — hardcoding the default port hangs wherever
+// magpie's own plugin host holds it (omp review [高-1]).
 async function freePort() {
   const s = createServer();
   await new Promise((r) => s.listen(0, "127.0.0.1", r));
@@ -125,7 +125,7 @@ test("serve: aggregation over known ndjson + corrupted line tolerance", async ()
 
 // EADDRINUSE retry: an occupied fixed PORT falls back to the fallback port,
 // stays up, and reports the actual bound port in service.json. Both ports are
-// picked dynamically (env-overridable POM_FALLBACK_PORT) — never 3497.
+// picked dynamically (env-overridable POM_FALLBACK_PORT) — never the default.
 test("serve: occupied fixed port retries then binds fallback", async () => {
   const [mainPort, fallbackPort] = await Promise.all([freePort(), freePort()]);
   const blocker = createServer(() => {});

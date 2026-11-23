@@ -65,10 +65,10 @@ test("stats retention: invalid values warn and use seven days; explicit opt-outs
   assert.equal(warn.mock.callCount(), 4);
 });
 
-test("index.mjs server(): port 0 must survive (ephemeral), not become 3497", async () => {
+test("index.mjs server(): default port falls back to 27497, explicit options.port (incl. 0) survives", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("../index.mjs", import.meta.url), "utf8");
-  assert.doesNotMatch(src, /Number\(options\?\.port\) \|\| 3497/);
-  assert.match(src, /Number\.isFinite\(Number\(options\?\.port\)\) \? Number\(options\.port\) : 3497/);
+  assert.doesNotMatch(src, /Number\(options\?\.port\) \|\| 27497/);
+  assert.match(src, /Number\.isFinite\(Number\(options\?\.port\)\) \? Number\(options\.port\) : 27497/);
 });
 
 test("index.mjs server(): port 0 binds ephemeral, returns the actual port, page/port.js carries it", async (t) => {
@@ -81,11 +81,12 @@ test("index.mjs server(): port 0 binds ephemeral, returns the actual port, page/
   assert.match(page, new RegExp(`window\\.__POM_PORT__ = ${out.port};`));
 });
 
-test("page/app.js: __POM_PORT__ outranks bridge service URL and options.port", async () => {
+test("page/: app.js navigates to the same-origin service proxy, no port discovery left", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../page/app.js", import.meta.url), "utf8");
-  // port.js loads first; bridge service / options.port only when no runtime port
-  assert.ok(src.indexOf('load("./port.js")') < src.indexOf('load("./_magpie/bridge.js")'), "port.js before bridge");
-  assert.match(src, /if \(!runtime\) \{/);
-  assert.match(src, /if \(!service && Number\.isInteger\(p\) && p > 0 && p < 65536\) port = p;/);
+  assert.match(src, /location\.replace\("\.\/_magpie\/service\/"\)/);
+  assert.doesNotMatch(src, /__POM_PORT__|FALLBACK_PORT|_magpie\/bridge\.js/);
+  const html = readFileSync(new URL("../page/index.html", import.meta.url), "utf8");
+  assert.match(html, /<script src="\.\/app\.js"><\/script>/);
+  assert.doesNotMatch(html, /port\.js|bridge\.js/);
 });

@@ -1,8 +1,9 @@
 <!doctype html>
 <!-- Magpie plugin sandbox page (design.md §6): sandbox="allow-scripts".
-     Logic lives in app.js — the sandbox CSP allows same-dir scripts but
-     blocks inline ones. app.js discovers the service URL via the bridge
-     (_magpie/bridge.js, served beside this page) and navigates there. -->
+     The frame lands on the stats service through magpie's same-origin
+     proxy (./_magpie/service/) — the browser never touches the stats
+     port, which stays loopback-only. Logic lives in app.js; the sandbox
+     CSP allows same-dir scripts but blocks inline ones. -->
 <html lang="zh">
 <head>
   <meta charset="utf-8">
@@ -23,7 +24,7 @@
 <body>
   <div class="waiting">
     <b>提示词优化统计</b>
-    <div id="said">正在连接本地统计服务…</div>
+    <div id="said">正在打开统计服务…</div>
   </div>
   <script src="./app.js"></script>
 </body>

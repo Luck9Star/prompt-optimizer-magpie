@@ -25,22 +25,21 @@ export default {
       started = startStatsService({
         statsDir: resolveStatsDir(),
         // options.port: magpie.page.service.option "port" in package.json;
-        // 0 = ephemeral — `|| 3497` would silently swallow it.
-        port: Number.isFinite(Number(options?.port)) ? Number(options.port) : 3497,
-        // options.bind: LAN opt-in ("0.0.0.0" / a NIC address). Default
-        // 127.0.0.1 — stats day-files carry clipped prompt text.
+        // 0 = ephemeral — `|| 27497` would silently swallow it.
+        port: Number.isFinite(Number(options?.port)) ? Number(options.port) : 27497,
+        // options.bind: default 127.0.0.1 — the browser goes through
+        // magpie's same-origin proxy, so LAN exposure is never needed;
+        // stats day-files carry clipped prompt text.
         bind: typeof options?.bind === "string" && options.bind ? options.bind : "127.0.0.1",
         // options.configPage: enable the /?page=config sub-page (default off).
         options: { configPage: options?.configPage === true },
       }).then((svc) => {
-        // port 0 discovery: the host's hello.service targets the manifest
-        // port when the option is 0 (its portOf rejects 0) and a desktop
-        // window never sets magpie.service — the one channel that reaches
-        // the sandboxed page is a file beside app.js, which it loads after
-        // the bridge (page/app.js reads window.__POM_PORT__).
+        // The page no longer reads port.js (same-origin proxy navigation),
+        // but the host may probe it and serve.mjs dev mode uses it; keep
+        // publishing the actual bound port for those readers.
         try {
           writeFileSync(join(PAGE_DIR, "port.js"), `window.__POM_PORT__ = ${svc.port};\n`);
-        } catch { /* read-only install: page falls back to 3497 */ }
+        } catch { /* read-only install: no reader left, harmless */ }
         return svc;
       }).catch((error) => {
         started = null;

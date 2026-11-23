@@ -71,7 +71,7 @@ magpie plugin options prompt-optimizer-magpie '{
   "optimizeTimeoutMs": 15000,
   "gatewayTimeoutMs": 25000,
   "gatewayUrl": "http://127.0.0.1:3425",
-  "port": 0,
+  "port": 27497,
   "bind": "127.0.0.1"
 }'
 ```
@@ -102,7 +102,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `logSkips` | `true` | `false` 时不记录常规 `pass` 事件（not-turn / self-loop / no-tools 等噪音）；**失败类始终记录**（optimize-fail / decider-fail / optimize-empty / error），排障不瞎 |
 | `logOptimizes` | `true` | `false` 时不记录成功路径的 `optimize` / `decide` 事件（optimized / cache-hit / dry-run / followup 等）；失败类不受此开关影响 |
 
-| `port` / `bind` | `0` / `127.0.0.1` | 统计服务监听：`port=0` OS 自动分配（绑定后实际端口写入 `page/port.js`，页面自动发现，适合 in-app 页面）；固定端口默认 3497，**远程经 magpie web 访问时必须用固定端口**（宿主代理只认 manifest 端口）。`bind` 默认仅本机回环。**开 LAN 访问（如 `0.0.0.0`）= stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）对内网可见**，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
+| `port` / `bind` | `27497` / `127.0.0.1` | 统计服务监听：**浏览器一律走 magpie 同源代理** `/_magpie/plugin/<token>/_magpie/service/`（宿主对声明了 `magpie.page.service` 的插件自动反向代理，本机与远程一致），不直连该端口。`port` 必须为 1–65535 固定值（默认 27497，与 magpie 文档一致；冲突时自动顺延尝试 +1..+5）。`bind` 默认仅本机回环；**开 `0.0.0.0` 仅限脱离 magpie 单独跑 `serve.mjs` 时使用**——stats 日志里的提示词原文（`orig`/`rewritten` 截断文本）会对网络可见，只在可信内网开；serve.mjs 也可用环境变量 `POM_BIND` 覆盖 |
 
 ## 日志布局与保留（按天分文件，7 天清理）
 

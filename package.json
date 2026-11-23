@@ -43,7 +43,7 @@
       },
       "file": "page/index.html",
       "service": {
-        "port": 3497,
+        "port": 27497,
         "option": "port"
       }
     },
@@ -74,7 +74,7 @@
       "optimizeTimeoutMs": 15000,
       "gatewayTimeoutMs": 25000,
       "gatewayUrl": "http://127.0.0.1:3425",
-      "port": 0,
+      "port": 27497,
       "bind": "127.0.0.1",
       "configPage": false,
       "minChars": 6,

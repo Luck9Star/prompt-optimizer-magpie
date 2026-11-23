@@ -69,7 +69,7 @@ magpie plugin options prompt-optimizer-magpie '{
   "optimizeTimeoutMs": 15000,
   "gatewayTimeoutMs": 25000,
   "gatewayUrl": "http://127.0.0.1:3425",
-  "port": 0,
+  "port": 27497,
   "bind": "127.0.0.1"
 }'
 ```
@@ -96,7 +96,7 @@ magpie plugin options prompt-optimizer-magpie '{
 | `gatewayTimeoutMs` | `25000` | **must be set explicitly** — per-hook budget, see above |
 | `gatewayUrl` | `http://127.0.0.1:3425` | gateway loopback address (decide + optimize both call back into the gateway) |
 | `logRewrites` / `logRewriteChars` | `true` / `600` | audit log carries clipped prompt text (`orig`/`rewritten`); `false` logs lengths only |
-| `port` / `bind` | `0` / `127.0.0.1` | stats service listener: `port=0` = OS-assigned (the bound port is written to `page/port.js` and the page discovers it — for the in-app page); fixed-port default is 3497, and **remote access through magpie web needs a fixed port** (the host proxy targets the manifest port). `bind` defaults to loopback only. **Enabling LAN access (e.g. `0.0.0.0`) makes the clipped prompt text in the stats log (`orig`/`rewritten`) visible to your LAN** — only on trusted networks. serve.mjs also honors the `POM_BIND` env override |
+| `port` / `bind` | `27497` / `127.0.0.1` | stats service listener: **the browser always goes through magpie's same-origin proxy** `/_magpie/plugin/<token>/_magpie/service/` (the host reverse-proxies plugins that declare `magpie.page.service`, local and remote alike) and never connects to this port directly. `port` must be a fixed value in 1–65535 (default 27497, matching the magpie docs; on conflict the service retries +1..+5). `bind` defaults to loopback only; **`0.0.0.0` is only for running `serve.mjs` standalone, outside magpie** — it makes the clipped prompt text in the stats log (`orig`/`rewritten`) visible to the network, so only on trusted LANs. serve.mjs also honors the `POM_BIND` env override |
 
 ## Output guardrails
 

@@ -27,14 +27,15 @@ if (migrateLegacyStats()) console.log("serve: migrated legacy stats/ to " + STAT
 const server = makeStatsServer({ statsDir: STATS, bind: BIND });
 // design §6: ephemeral (PORT=0) is the norm; a fixed PORT may hit EADDRINUSE —
 // per candidate: same-port retry 16×100ms (a leaving process's socket often
-// clears), then move to the next candidate (fixed fallback 3497 for the page's
-// hello.service-down path). Each candidate gets its own 16-retry budget so a
-// fallback port also survives a lingering socket (systemd restarts included).
+// clears), then move to the next candidate (fixed fallback 27497 for the
+// page's hello.service-down path). Each candidate gets its own 16-retry budget
+// so a fallback port also survives a lingering socket (systemd restarts
+// included).
 const port = Number(process.env.PORT ?? 0);
 // hello.service-down fallback (design §6.2b). Overridable so tests can pick
-// a free port — hardcoding 3497 made the suite hang wherever magpie's own
-// plugin host holds it.
-const FIXED_FALLBACK = [Number(process.env.POM_FALLBACK_PORT ?? 3497)];
+// a free port — hardcoding the default made the suite hang wherever
+// magpie's own plugin host holds it.
+const FIXED_FALLBACK = [Number(process.env.POM_FALLBACK_PORT ?? 27497)];
 const RETRIES_PER_CANDIDATE = 16;
 const RETRY_DELAY_MS = 100;
 const candidates = port === 0 ? [0] : [port, ...FIXED_FALLBACK.filter((p) => p !== port)];
