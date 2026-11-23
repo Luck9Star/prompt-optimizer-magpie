@@ -12,6 +12,15 @@ import { contentVersion, getTemplate } from "./templates/index.mjs";
 import { hasTools, opensTurn, lastUserText, stripLeadingNoise } from "./lib/turn.mjs";
 import { record } from "./lib/stats.mjs";
 
+
+// R3: additive ndjson fields. Purely additive — no existing field is
+// renamed, removed or re-valued. `record()` is untouched.
+const AUDIT_FIELDS = [
+  "decideVerdict", "decideConfidence", "deciderError", "deciderHttpStatus",
+  "errorKind", "errorMsg", "bypassPrefixHit", "httpStatus",
+];
+const errMsg = (error) => redact(String(error?.message ?? "")).slice(0, 120);
+const errKind = (error) => error?.name;
 const DEFAULTS = {
   enabled: true,
   dryRun: true,
@@ -82,6 +91,13 @@ export async function onRequest(body, ctx) {
     const n = o.logRewriteChars || 600;
     return safe.length > n ? safe.slice(0, n) + `… +${safe.length - n} chars` : safe;
   };
+  // R3 additive audit fields: only written when the caller supplies a value.
+  // Strings are clamped to 200 chars here (deciderError/errorMsg to 120 at
+  // their call sites). Never touch orig/rewritten clip(600) or record().
+  const clamp = (v, n = 200) => typeof v === "string" && v.length > n ? v.slice(0, n) : v;
+  const audit = (x) => Object.fromEntries(Object.entries(x)
+    .filter(([k, v]) => AUDIT_FIELDS.includes(k) && v !== undefined && v !== null)
+    .map(([k, v]) => [k, clamp(v)]));
   const log = (action, reason, x = {}) => {
     const failed = reason.includes("-fail") || reason === "optimize-empty" || reason === "error";
     if (!failed && (action === "pass" ? o.logSkips : o.logOptimizes) === false) return;
@@ -101,6 +117,7 @@ export async function onRequest(body, ctx) {
       ...(o.logRewrites !== false && x.newText !== undefined && { rewritten: clip(x.newText) }),
       ...(x.httpStatus !== undefined && { httpStatus: x.httpStatus }),
       ...(x.deciderHttpStatus !== undefined && { deciderHttpStatus: x.deciderHttpStatus }),
+      ...audit(x),
     }, o.statsDir);
   };
   let summary;
@@ -134,7 +151,10 @@ export async function onRequest(body, ctx) {
       if (typeof origin === "string" && origin && !o.allowedOrigins.includes(origin)) return pass("origin");
     }
     const prefixes = [].concat(o.bypassPrefix).filter(Boolean);
-    if (typeof (ctx && ctx.query) === "string" && prefixes.some((p) => ctx.query.trimStart().startsWith(p))) return pass("bypass-prefix");
+    if (typeof (ctx && ctx.query) === "string") {
+      const hit = prefixes.find((p) => ctx.query.trimStart().startsWith(p));
+      if (hit) return pass("bypass-prefix", { bypassPrefixHit: hit });
+    }
     // Machine-injected wrappers (bypassWrappers) LEADING the newest turn
     // (after noise strip): they wrap protocol text the rewrite must not touch.
     const wrappers = [].concat(o.bypassWrappers || []).filter(Boolean);
@@ -176,7 +196,7 @@ export async function onRequest(body, ctx) {
         appendFileSync(path, `=== ${new Date().toISOString()} ${header} origLen=${orig.length} ===\n${dump}\n\n`, { mode: 0o600 });
       } catch {}
     }
-    if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
+    { const hit = prefixes.find((p) => orig.startsWith(p)); if (hit) return pass("bypass-prefix", { bypassPrefixHit: hit }); }
     if (matchesAnchor(orig)) return pass("bypass-anchor");
     if (wrappers.length && matchesWrapper(orig)) return pass("bypass-wrapper");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length, inUnits: countUnits(orig) });
@@ -226,7 +246,7 @@ export async function onRequest(body, ctx) {
       if (remaining() <= 0) return pass("budget-exhausted", size);
       if (!d) {
         if (thread) {
-          log("decide", "decider-fail", { ...input, ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
+          log("decide", "decider-fail", { ...input, deciderError: errMsg(deciderError), errorKind: errKind(deciderError), ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
           return pass("no-decider-followup", size);
         }
         deciderFailed = true;
@@ -235,7 +255,7 @@ export async function onRequest(body, ctx) {
       } else {
         if (d.choice !== "new_task" || !Number.isFinite(d.confidence) || d.confidence < 0.6) {
           const reason = d.choice === "new_task" ? "low-confidence" : d.choice === "followup" ? "followup" : redact(`choice:${d.choice}`);
-          log("decide", reason, input);
+          log("decide", reason, { ...input, decideVerdict: d.choice, ...(Number.isFinite(d.confidence) && { decideConfidence: d.confidence }) });
           return finish("skipped", reason.startsWith("choice:") ? "unknown-choice" : reason);
         }
         if (typeof d.tpl?.confidence === "number" && d.tpl.confidence >= 0.5) {
@@ -256,7 +276,7 @@ export async function onRequest(body, ctx) {
         summary.mode = mode = "rule";
       }
     }
-    if (deciderFailed) log("decide", `decider-fail-${mode}`, { ...input, ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
+    if (deciderFailed) log("decide", `decider-fail-${mode}`, { ...input, deciderError: errMsg(deciderError), errorKind: errKind(deciderError), ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
 
     const langSuffix = cjkRatio(orig) >= 0.3 ? "" : "_en";
     const templateId = langSuffix ? "professional_en" : mode === "merged" ? "auto" : tier;
@@ -269,6 +289,7 @@ export async function onRequest(body, ctx) {
       if (mode === "merged") {
         let parsed;
         let raw;
+        let parseError;
         const tOpt = Date.now();
         try {
           raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
@@ -276,13 +297,14 @@ export async function onRequest(body, ctx) {
         } catch (error) {
           if (hostAborted()) return passHostAbort();
           if (expired(error)) return pass("budget-exhausted", size);
+          parseError = error;
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
         if (raw?.truncated) return pass("merged-truncated", input);
         if (!raw && hostAborted()) return passHostAbort();
         if (!parsed) {
           if (!breaker.until && ++breaker.failures >= 5) breaker.until = Date.now() + 600_000;
-          return pass("merged-fail", input);
+          return pass("merged-fail", { ...input, errorKind: errKind(parseError), ...(parseError?.status && { httpStatus: parseError.status }) });
         }
         if (!breaker.until) breaker.failures = 0;
         if (parsed.passthrough) return pass("merged-passthrough", input);
@@ -291,11 +313,11 @@ export async function onRequest(body, ctx) {
         const tOpt = Date.now();
         try { out = await optimize(o, orig, templateId, timeoutSignal(ctx, o.optimizeTimeoutMs)); } catch (error) {
           if (hostAborted()) return passHostAbort();
-          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", { ...size, ...(error?.status && { httpStatus: error.status }) });
+          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", { ...size, errorKind: errKind(error), ...(error?.status && { httpStatus: error.status }) });
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
         if (out && out.truncated) return pass("optimize-truncated", size);
-        if (!out) return pass("optimize-empty", size);
+        if (!out) return pass("optimize-empty", { ...size, errorKind: errKind(new Error("empty rewrite")) });
         out = stripFence(out);
       }
     }
@@ -318,7 +340,7 @@ export async function onRequest(body, ctx) {
     return o.dryRun ? finish("skipped", reason, undefined, "dry-run") : finish("ready", reason, newBody);
   } catch (error) {
     if (hostAborted()) return passHostAbort();
-    return pass("error");
+    return pass("error", { errorKind: errKind(error), errorMsg: errMsg(error) });
   }
 }
 
