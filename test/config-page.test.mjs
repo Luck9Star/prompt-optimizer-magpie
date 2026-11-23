@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { request } from "node:http";
 import { makeStatsServer } from "../lib/stats-service.mjs";
 import { CONFIG_FIELDS, parseConfigForm, writeConfig, readPluginsJson } from "../lib/config-store.mjs";
+import { renderConfigPage } from "../lib/stats-page.mjs";
 
 const mkPlugins = (opts) => {
   const dir = mkdtempSync(join(tmpdir(), "pom-cfg-"));
@@ -65,7 +66,7 @@ test("config 1: GET — configPage off → 404 notice; on → whitelist fields p
 test("config 2: POST valid → atomic update (whitelist keys changed, foreign kept, indent 2) + 302", async () => {
   const { dir, file } = mkPlugins({ minChars: 6, gatewayUrl: "http://x", custom: 42 });
   const srv = await listen(makeStatsServer({ statsDir: dir, pluginsFile: file, options: { configPage: true } }));
-  const body = "enabled=on&dryRun=&optimizerMode=merged&minChars=33&maxChars=9000&logSkips=on&logOptimizes=&deciderGroup=group%2Fd&optimizeGroup=group%2Fo&deciderTimeoutMs=1500&optimizeTimeoutMs=30000";
+  const body = "enabled=off&enabled=on&dryRun=off&optimizerMode=merged&minChars=33&maxChars=9000&logSkips=off&logSkips=on&logOptimizes=off&deciderGroup=group%2Fd&optimizeGroup=group%2Fo&deciderTimeoutMs=1500&optimizeTimeoutMs=30000";
   const r = await http(srv, { method: "POST", path: "/?page=config", body });
   assert.equal(r.status, 302);
   assert.equal(r.headers.location, "?page=config&saved=1");
@@ -73,7 +74,7 @@ test("config 2: POST valid → atomic update (whitelist keys changed, foreign ke
   const mine = doc.plugins.find((p) => p.spec === "/root/prompt-optimizer-magpie");
   assert.equal(mine.options.minChars, 33);
   assert.equal(mine.options.optimizerMode, "merged");
-  assert.equal(mine.options.dryRun, false);        // absent checkbox → false
+  assert.equal(mine.options.dryRun, false);        // unchecked → hidden off → false
   assert.equal(mine.options.gatewayUrl, "http://x"); // 非白名单键原样保留
   assert.equal(mine.options.custom, 42);
   const other = doc.plugins.find((p) => p.spec === "/root/some-other-plugin");
@@ -140,7 +141,7 @@ test("config unit: parseConfigForm drops unknown keys", () => {
   const r = parseConfigForm("minChars=9&gatewayUrl=http%3A%2F%2Fevil&enabled=on");
   assert.equal(r.ok, true);
   assert.equal(r.values.enabled, true);
-  assert.equal(r.values.dryRun, false, "absent checkbox resolves false");
+  assert.ok(!("dryRun" in r.values), "absent bool = not submitted, value untouched");
   assert.ok(!("gatewayUrl" in r.values));
 });
 
@@ -222,4 +223,62 @@ test("spec match: multi-hit priority npm: > bare/versioned > path", () => {
   const { dir: d3, file: f3 } = mkPluginsSpecs(["prompt-optimizer-magpie", "/opt/x/prompt-optimizer-magpie"]);
   assert.equal(readPluginsJson(f3).entry.spec, "prompt-optimizer-magpie");
   rmSync(d3, { recursive: true, force: true });
+});
+
+// 0.2.8 T3: bool semantics — getAll(): on → true, only off → false, absent → untouched.
+test("T3 bool: only enabled submitted → dryRun untouched (no accidental disable)", async () => {
+  const { dir, file } = mkPlugins({ minChars: 6, dryRun: true, enabled: true, logSkips: true });
+  const srv = await listen(makeStatsServer({ statsDir: dir, pluginsFile: file, options: { configPage: true } }));
+  const r = await http(srv, { method: "POST", path: "/?page=config", body: "enabled=off&enabled=on" });
+  assert.equal(r.status, 302);
+  const doc = JSON.parse(readFileSync(file, "utf8"));
+  const mine = doc.plugins.find((p) => p.spec === "/root/prompt-optimizer-magpie");
+  assert.equal(mine.options.enabled, true);
+  assert.equal(mine.options.dryRun, true, "dryRun not in the submission → stored value kept");
+  assert.equal(mine.options.logSkips, true);
+  srv.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("T3 bool: unchecked box → only off submitted → false", async () => {
+  const { dir, file } = mkPlugins({ dryRun: true });
+  const srv = await listen(makeStatsServer({ statsDir: dir, pluginsFile: file, options: { configPage: true } }));
+  const r = await http(srv, { method: "POST", path: "/?page=config", body: "dryRun=off" });
+  assert.equal(r.status, 302);
+  const mine = JSON.parse(readFileSync(file, "utf8")).plugins.find((p) => p.spec === "/root/prompt-optimizer-magpie");
+  assert.equal(mine.options.dryRun, false);
+  srv.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("T3 bool: empty form body → no value changes, file bytes identical", async () => {
+  const { dir, file } = mkPlugins({ dryRun: true, minChars: 6 });
+  const before = readFileSync(file, "utf8");
+  const srv = await listen(makeStatsServer({ statsDir: dir, pluginsFile: file, options: { configPage: true } }));
+  const r = await http(srv, { method: "POST", path: "/?page=config", body: "" });
+  assert.equal(r.status, 302);
+  assert.equal(readFileSync(file, "utf8"), before, "empty submission writes nothing (overlay of zero keys)");
+  srv.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("T3 port: def 27497, min 1 — 0 is rejected", async () => {
+  const f = CONFIG_FIELDS.find((x) => x.key === "port");
+  assert.equal(f.def, 27497);
+  assert.equal(f.min, 1);
+  const r = parseConfigForm("port=0");
+  assert.equal(r.ok, false);
+  assert.equal(r.errors.port, "cfgErrRange");
+  assert.equal(parseConfigForm("port=27497").values.port, 27497);
+});
+
+test("T3 render: every bool checkbox is preceded by a hidden off input", () => {
+  const { dir, file } = mkPlugins({});
+  const html = renderConfigPage({ current: { enabled: false }, lang: "zh" });
+  for (const f of CONFIG_FIELDS.filter((x) => x.type === "bool")) {
+    assert.match(html, new RegExp(`<input type="hidden" name="${f.key}" value="off"><input type="checkbox" name="${f.key}"`), f.key);
+  }
+  assert.match(html, /name="enabled" value="off"><input type="checkbox" name="enabled">/); // current false → unchecked
+  assert.match(html, /name="port" value="27497"/); // DEFAULTS value prefilled
+  rmSync(dir, { recursive: true, force: true });
 });
