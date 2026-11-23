@@ -88,6 +88,8 @@ export async function onRequest(body, ctx) {
       ...(x.optimizeMs !== undefined && { optimizeMs: x.optimizeMs }),
       ...(o.logRewrites !== false && x.origText !== undefined && { orig: clip(x.origText) }),
       ...(o.logRewrites !== false && x.newText !== undefined && { rewritten: clip(x.newText) }),
+      ...(x.httpStatus !== undefined && { httpStatus: x.httpStatus }),
+      ...(x.deciderHttpStatus !== undefined && { deciderHttpStatus: x.deciderHttpStatus }),
     }, o.statsDir);
   };
   let summary;
@@ -169,17 +171,19 @@ export async function onRequest(body, ctx) {
     const expired = error => remaining() <= 0 || (budgetTimer && error?.name === "TimeoutError");
     let tier = "professional";
     let deciderFailed = false;
+    let deciderError;
     if (mode === "auto") {
       let d;
       if (!beginCall("deciderTimeoutMs")) return pass("budget-exhausted", size);
       const tDecide = Date.now();
       try { d = await decide(o, thread, orig, timeoutSignal(ctx, o.deciderTimeoutMs)); } catch (error) {
         if (expired(error)) return pass("budget-exhausted", size);
+        deciderError = error;
       } finally { input.decideMs = Date.now() - tDecide; }
       if (remaining() <= 0) return pass("budget-exhausted", size);
       if (!d) {
         if (thread) {
-          log("decide", "decider-fail", input);
+          log("decide", "decider-fail", { ...input, ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
           return pass("no-decider-followup", size);
         }
         deciderFailed = true;
@@ -209,7 +213,7 @@ export async function onRequest(body, ctx) {
         summary.mode = mode = "rule";
       }
     }
-    if (deciderFailed) log("decide", `decider-fail-${mode}`, input);
+    if (deciderFailed) log("decide", `decider-fail-${mode}`, { ...input, ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
 
     const langSuffix = cjkRatio(orig) >= 0.3 ? "" : "_en";
     const templateId = langSuffix ? "professional_en" : mode === "merged" ? "auto" : tier;
@@ -221,14 +225,16 @@ export async function onRequest(body, ctx) {
       if (!beginCall("optimizeTimeoutMs")) return pass("budget-exhausted", size);
       if (mode === "merged") {
         let parsed;
+        let raw;
         const tOpt = Date.now();
         try {
-          const raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
+          raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
           parsed = parseMerged(raw, langSuffix);
         } catch (error) {
           if (expired(error)) return pass("budget-exhausted", size);
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
+        if (raw?.truncated) return pass("merged-truncated", input);
         if (!parsed) {
           if (!breaker.until && ++breaker.failures >= 5) breaker.until = Date.now() + 600_000;
           return pass("merged-fail", input);
@@ -239,9 +245,10 @@ export async function onRequest(body, ctx) {
       } else {
         const tOpt = Date.now();
         try { out = await optimize(o, orig, templateId, timeoutSignal(ctx, o.optimizeTimeoutMs)); } catch (error) {
-          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", size);
+          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", { ...size, ...(error?.status && { httpStatus: error.status }) });
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
+        if (out && out.truncated) return pass("optimize-truncated", size);
         if (!out) return pass("optimize-empty", size);
         out = stripFence(out);
       }
@@ -290,7 +297,7 @@ async function decide(o, thread, orig, signal) {
     }),
     signal,
   });
-  if (!res.ok) return undefined;
+  if (!res.ok) throw Object.assign(new Error(`gateway ${res.status}`), { status: res.status });
   const j = await res.json();
   const a = j && j.answers && j.answers.noul;
   if (!a || typeof a.choice !== "string") return undefined;
@@ -325,9 +332,12 @@ async function completion(o, system, user, signal) {
     }),
     signal,
   });
-  if (!res.ok) return undefined;
+  if (!res.ok) throw Object.assign(new Error(`gateway ${res.status}`), { status: res.status });
   const j = await res.json();
-  const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  const choice = j && j.choices && j.choices[0];
+  const c = choice && choice.message && choice.message.content;
+  // finish_reason=length → half a rewrite: callers pass the request through.
+  if (choice && choice.finish_reason === "length") return { truncated: true };
   return typeof c === "string" && c.trim() ? c : undefined;
 }
 
