@@ -37,3 +37,12 @@ test("dropping an original backticked token still trips the guard", () => {
   const out = "看注册逻辑"; // backticked identifier swallowed
   assert.equal(preservesTokens(orig, out), false);
 });
+
+test("herdr/orchestrator machine wrappers bypass too", async () => {
+  for (const w of ["<title-request>", "<progress-check>", "<job>", "<recap>"]) {
+    const orig = `${w}\nSession UI request, not from the user. Name this session for a small chat sidebar.`;
+    const body = bodyWith(orig);
+    const out = await onRequest(body, { agent: "omp", query: orig, protocol: "chat", options: {} });
+    assert.equal(out, undefined, w);
+  }
+});

@@ -20,9 +20,10 @@ const DEFAULTS = {
   minChars: 6,
   maxChars: 12000,
   bypassPrefix: ["!!", "##"],
-  // 机器注入包装（Hermes out-of-band、@file 展开等）不是人类输入，改写它们
-  // 只会破坏协议语义且必然触发 output-guard。命中即整条放行，不进优化。
-  bypassWrappers: ["<system-notice>"],
+  // 机器注入包装（Hermes out-of-band/system-notice、title-request、progress-check、
+  // job 完成通知、recap 等）不是人类输入，改写它们只会破坏协议语义且必然触发
+  // output-guard。命中即整条放行，不进优化。
+  bypassWrappers: ["<system-notice>", "<title-request>", "<progress-check>", "<job>", "<recap>"],
   bypassModels: [],
   bypassAgents: [],
   allowedOrigins: [],
