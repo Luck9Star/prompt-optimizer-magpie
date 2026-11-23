@@ -54,5 +54,7 @@ export default {
   },
 };
 
-// test-only: stop the singleton service (page/port.js stays behind, stale)
-export const __testClose = () => started?.then((s) => s.close()).catch(() => {});
+// test-only: stop the singleton service (page/port.js stays behind, stale).
+// Exported as an OBJECT on purpose: magpie calls every exported FUNCTION as a
+// plugin (docs FAQ), so a function export here would be invoked by the host.
+export const __testHooks = { close: () => started?.then((s) => s.close()).catch(() => {}) };

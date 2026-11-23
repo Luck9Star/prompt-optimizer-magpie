@@ -164,7 +164,7 @@ export async function onRequest(body, ctx) {
       let d;
       if (!beginCall("deciderTimeoutMs")) return pass("budget-exhausted", size);
       const tDecide = Date.now();
-      try { d = await decide(o, thread, orig); } catch (error) {
+      try { d = await decide(o, thread, orig, timeoutSignal(ctx, o.deciderTimeoutMs)); } catch (error) {
         if (expired(error)) return pass("budget-exhausted", size);
       } finally { input.decideMs = Date.now() - tDecide; }
       if (remaining() <= 0) return pass("budget-exhausted", size);
@@ -214,7 +214,7 @@ export async function onRequest(body, ctx) {
         let parsed;
         const tOpt = Date.now();
         try {
-          const raw = await completion(o, mergedSystemPrompt(langSuffix), orig);
+          const raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
           parsed = parseMerged(raw, langSuffix);
         } catch (error) {
           if (expired(error)) return pass("budget-exhausted", size);
@@ -229,7 +229,7 @@ export async function onRequest(body, ctx) {
         out = parsed.rest;
       } else {
         const tOpt = Date.now();
-        try { out = await optimize(o, orig, templateId); } catch (error) {
+        try { out = await optimize(o, orig, templateId, timeoutSignal(ctx, o.optimizeTimeoutMs)); } catch (error) {
           return pass(expired(error) ? "budget-exhausted" : "optimize-fail", size);
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
@@ -262,7 +262,15 @@ export async function onRequest(body, ctx) {
 // System One decider: is the newest user input a new task or a follow-up?
 // `orig` is sent verbatim in state.latestUserInput — without it the model
 // has nothing to classify and would just guess.
-async function decide(o, thread, orig) {
+// Host budget first: combine ctx.signal (magpie giving up on the hook) with
+// our own timeout so an abandoned hook stops burning gateway tokens.
+function timeoutSignal(ctx, ms) {
+  const t = AbortSignal.timeout(ms);
+  const host = ctx?.signal;
+  return host && AbortSignal.any ? AbortSignal.any([host, t]) : t;
+}
+
+async function decide(o, thread, orig, signal) {
   const res = await fetch(`${o.gatewayUrl}/v1/systemone`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -271,7 +279,7 @@ async function decide(o, thread, orig) {
       state: { hasAssistantReply: thread, latestUserInput: orig, inputChars: orig.length },
       questions,
     }),
-    signal: AbortSignal.timeout(o.deciderTimeoutMs),
+    signal,
   });
   if (!res.ok) return undefined;
   const j = await res.json();
@@ -287,14 +295,14 @@ function hasAssistantReply(body, protocol) {
   return Array.isArray(arr) && arr.some((m) => m && (m.role === "assistant" || m.role === "model"));
 }
 
-async function optimize(o, orig, templateId) {
+async function optimize(o, orig, templateId, signal) {
   const tpl = getTemplate(templateId);
   if (!tpl) return undefined;
   const user = MUSTACHE.test(tpl.user) ? tpl.user.replace(MUSTACHE, () => JSON.stringify(orig)) : `${tpl.user}\n\n${orig}`;
-  return completion(o, `${tpl.system}\n\n${TAIL_NOTE}`, user);
+  return completion(o, `${tpl.system}\n\n${TAIL_NOTE}`, user, signal);
 }
 
-async function completion(o, system, user) {
+async function completion(o, system, user, signal) {
   const res = await fetch(`${o.gatewayUrl}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -306,7 +314,7 @@ async function completion(o, system, user) {
         { role: "user", content: user },
       ],
     }),
-    signal: AbortSignal.timeout(o.optimizeTimeoutMs),
+    signal,
   });
   if (!res.ok) return undefined;
   const j = await res.json();

@@ -74,7 +74,7 @@ test("index.mjs server(): default port falls back to 27497, explicit options.por
 test("index.mjs server(): port 0 binds ephemeral, returns the actual port, page/port.js carries it", async (t) => {
   const { readFileSync } = await import("node:fs");
   const mod = await import("../index.mjs");
-  t.after(() => mod.__testClose());
+  t.after(() => mod.__testHooks.close());
   const out = await mod.default.server({}, { port: 0 });
   assert.ok(Number.isInteger(out.port) && out.port >= 1 && out.port < 65536, `actual port returned: ${out.port}`);
   const page = readFileSync(new URL("../page/port.js", import.meta.url), "utf8");
