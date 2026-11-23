@@ -183,6 +183,42 @@ test("spec match: all five install forms hit", () => {
   }
 });
 
+test("spec match: github: install forms hit (repo name must be exactly ours)", () => {
+  for (const spec of [
+    "github:Luck9Star/prompt-optimizer-magpie#dev",
+    "github:Luck9Star/prompt-optimizer-magpie#v0.2.9",
+    "github:Luck9Star/prompt-optimizer-magpie@main",
+    "github:Luck9Star/prompt-optimizer-magpie",
+    "github:Luck9Star/prompt-optimizer-magpie.git#dev",
+  ]) {
+    const { dir, file } = mkPluginsSpecs(["/root/other-plugin", spec]);
+    const r = readPluginsJson(file);
+    assert.equal(r.error, undefined, spec);
+    assert.equal(r.entry.spec, spec, spec);
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // lookalikes must not match
+  for (const spec of [
+    "github:someone/prompt-optimizer-magpie-fork#dev",
+    "github:someone/other-plugin",
+    "github:Luck9Star/prompt-optimizer-magpie/sub#dev",
+    "github:/prompt-optimizer-magpie",
+  ]) {
+    const { dir, file } = mkPluginsSpecs([spec]);
+    assert.equal(readPluginsJson(file).error, "cfgErrNoSpec", spec);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spec match: npm entry wins over a github: entry (tier order)", () => {
+  const { dir, file } = mkPluginsSpecs([
+    "github:Luck9Star/prompt-optimizer-magpie#dev",
+    "prompt-optimizer-magpie@latest",
+  ]);
+  assert.equal(readPluginsJson(file).entry.spec, "prompt-optimizer-magpie@latest");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("spec match: unrelated specs miss → cfgErrNoSpec", () => {
   const { dir, file } = mkPluginsSpecs(["/root/other-plugin", "some-other-plugin@1.0.0"]);
   assert.equal(readPluginsJson(file).error, "cfgErrNoSpec");
