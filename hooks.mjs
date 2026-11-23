@@ -103,7 +103,12 @@ export async function onRequest(body, ctx) {
     const unavailable = ["merged-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
     return finish(unavailable ? "unavailable" : "skipped", reason);
   };
+  // The host gave up on this hook (ctx.signal aborted): not a gateway
+  // failure — pass through, no failure reason, no breaker, "skipped".
+  const hostAborted = () => ctx?.signal?.aborted === true;
+  const passHostAbort = () => pass("host-abort");
   try {
+    if (hostAborted()) return passHostAbort();
     if (o.enabled === false) return pass("disabled");
     if (ctx && ctx.kind === "subagent") return pass("subagent");
     if (body && (body.model === o.optimizeGroup || body.model === o.deciderGroup)) return pass("self-loop");
@@ -180,6 +185,7 @@ export async function onRequest(body, ctx) {
       if (!beginCall("deciderTimeoutMs")) return pass("budget-exhausted", size);
       const tDecide = Date.now();
       try { d = await decide(o, thread, orig, timeoutSignal(ctx, o.deciderTimeoutMs)); } catch (error) {
+        if (hostAborted()) return passHostAbort();
         if (expired(error)) return pass("budget-exhausted", size);
         deciderError = error;
       } finally { input.decideMs = Date.now() - tDecide; }
@@ -234,10 +240,12 @@ export async function onRequest(body, ctx) {
           raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
           parsed = parseMerged(raw, langSuffix);
         } catch (error) {
+          if (hostAborted()) return passHostAbort();
           if (expired(error)) return pass("budget-exhausted", size);
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
         if (raw?.truncated) return pass("merged-truncated", input);
+        if (!raw && hostAborted()) return passHostAbort();
         if (!parsed) {
           if (!breaker.until && ++breaker.failures >= 5) breaker.until = Date.now() + 600_000;
           return pass("merged-fail", input);
@@ -248,6 +256,7 @@ export async function onRequest(body, ctx) {
       } else {
         const tOpt = Date.now();
         try { out = await optimize(o, orig, templateId, timeoutSignal(ctx, o.optimizeTimeoutMs)); } catch (error) {
+          if (hostAborted()) return passHostAbort();
           return pass(expired(error) ? "budget-exhausted" : "optimize-fail", { ...size, ...(error?.status && { httpStatus: error.status }) });
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
@@ -273,7 +282,8 @@ export async function onRequest(body, ctx) {
     const reason = fromCache ? "cache-hit" : o.dryRun ? "dry-run" : mode === "merged" ? "merged-optimized" : "optimized";
     log("optimize", reason, audit);
     return o.dryRun ? finish("skipped", reason, undefined, "dry-run") : finish("ready", reason, newBody);
-  } catch {
+  } catch (error) {
+    if (hostAborted()) return passHostAbort();
     return pass("error");
   }
 }
