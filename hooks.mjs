@@ -270,6 +270,11 @@ export async function onRequest(body, ctx) {
           log("decide", reason, { ...input, decideVerdict: d.choice, ...(Number.isFinite(d.confidence) && { decideConfidence: d.confidence }) });
           return finish("skipped", reason.startsWith("choice:") ? "unknown-choice" : reason);
         }
+        // Audit the accepted decision too: this path emits no decide event,
+        // so the summary carries the verdict (threshold analysis must see
+        // accepted and rejected verdicts alike, never only a biased subset).
+        summary.decideVerdict = d.choice;
+        if (Number.isFinite(d.confidence)) summary.decideConfidence = d.confidence;
         if (typeof d.tpl?.confidence === "number" && d.tpl.confidence >= 0.5) {
           if (d.tpl.choice === "skip") return pass("tpl-skip", input);
           if (["basic", "planning"].includes(d.tpl.choice)) tier = d.tpl.choice;
@@ -329,7 +334,7 @@ export async function onRequest(body, ctx) {
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
         if (out && out.truncated) return pass("optimize-truncated", size);
-        if (!out) return pass("optimize-empty", { ...size, errorKind: errKind(new Error("empty rewrite")) });
+        if (!out) return pass("optimize-empty", size);
         out = stripFence(out);
       }
     }

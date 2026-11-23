@@ -123,7 +123,7 @@ test("R3: optimize-fail records errorKind + httpStatus", async () => {
   } finally { await gw.close(); }
 });
 
-test("R3: optimize-empty records errorKind", async () => {
+test("R3: optimize-empty carries no errorKind (an empty result is not an exception)", async () => {
   const gw = await mockGateway({ optimize: "" });
   try {
     const n = before();
@@ -131,7 +131,21 @@ test("R3: optimize-empty records errorKind", async () => {
     const evs = since(n);
     const ev = evs.find((e) => e.reason === "optimize-empty");
     assert.ok(ev, `optimize-empty recorded: ${JSON.stringify(evs.map((e) => e.reason))}`);
-    assert.equal(ev.errorKind, "Error");
+    assert.ok(!("errorKind" in ev), "no fabricated errorKind");
+  } finally { await gw.close(); }
+});
+
+test("R3: the summary carries the accepted decision's verdict and confidence", async () => {
+  const gw = await mockGateway({ optimize: "一段足够长的、用于断言的优化后提示词替换文本" });
+  try {
+    const n = before();
+    await onRequest(singleUser(PROMPT), ctxWith(gw.url, { deciderGroup: "group/route-decider", dryRun: false, logOptimizes: false, logSkips: false }));
+    const all = readFileSync(dayFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const s = all.filter((e) => e.action === "summary").pop();
+    assert.ok(s, "summary recorded");
+    assert.equal(s.decideVerdict, "new_task");
+    assert.equal(s.decideConfidence, 0.9, "mock default confidence");
+    assert.ok(!all.slice(n).some((e) => e.action === "decide"), "accepted decisions emit no decide event");
   } finally { await gw.close(); }
 });
 
