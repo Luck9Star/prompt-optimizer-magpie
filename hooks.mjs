@@ -88,6 +88,8 @@ export async function onRequest(body, ctx) {
       ...(x.optimizeMs !== undefined && { optimizeMs: x.optimizeMs }),
       ...(o.logRewrites !== false && x.origText !== undefined && { orig: clip(x.origText) }),
       ...(o.logRewrites !== false && x.newText !== undefined && { rewritten: clip(x.newText) }),
+      ...(x.httpStatus !== undefined && { httpStatus: x.httpStatus }),
+      ...(x.deciderHttpStatus !== undefined && { deciderHttpStatus: x.deciderHttpStatus }),
     }, o.statsDir);
   };
   let summary;
@@ -101,7 +103,12 @@ export async function onRequest(body, ctx) {
     const unavailable = ["merged-fail", "optimize-fail", "optimize-empty", "error"].includes(reason);
     return finish(unavailable ? "unavailable" : "skipped", reason);
   };
+  // The host gave up on this hook (ctx.signal aborted): not a gateway
+  // failure — pass through, no failure reason, no breaker, "skipped".
+  const hostAborted = () => ctx?.signal?.aborted === true;
+  const passHostAbort = () => pass("host-abort");
   try {
+    if (hostAborted()) return passHostAbort();
     if (o.enabled === false) return pass("disabled");
     if (ctx && ctx.kind === "subagent") return pass("subagent");
     if (body && (body.model === o.optimizeGroup || body.model === o.deciderGroup)) return pass("self-loop");
@@ -128,6 +135,9 @@ export async function onRequest(body, ctx) {
     const lu = lastUserText(body, protocol);
     if (!lu) return pass("no-user-text");
     const orig = lu.text;
+    // Pre-check that the span is replaceable (e.g. the text is split over
+    // two content parts) before spending a model call on it.
+    if (!replaceSpan(body, protocol, lu.index, orig, orig)) return pass("no-span");
     if (o.debugDump) {
       try {
         const path = typeof o.debugDump === "string" ? o.debugDump : join(dirname(fileURLToPath(import.meta.url)), "debug-dump.log");
@@ -145,6 +155,9 @@ export async function onRequest(body, ctx) {
     const input = { ...size, origText: orig };
     if (protocol === "responses" && body.previous_response_id) return pass("no-decider-followup", size);
     const thread = hasAssistantReply(body, protocol);
+    // Floor (origUnits×0.4) above the ceiling means no rewrite could ever
+    // pass the guard: skip before spending a model call.
+    if (size.inUnits * 0.4 > guardCeiling(size.inUnits, o)) return pass("input-too-long", size);
     const override = matchingOverride(o.overrides, ctx?.agent, body.model);
     if (!thread && override?.optimizerMode) o.optimizerMode = override.optimizerMode;
     const remaining = () => override?.budgetMs === undefined ? Infinity : override.budgetMs - (Date.now() - t0);
@@ -169,17 +182,20 @@ export async function onRequest(body, ctx) {
     const expired = error => remaining() <= 0 || (budgetTimer && error?.name === "TimeoutError");
     let tier = "professional";
     let deciderFailed = false;
+    let deciderError;
     if (mode === "auto") {
       let d;
       if (!beginCall("deciderTimeoutMs")) return pass("budget-exhausted", size);
       const tDecide = Date.now();
       try { d = await decide(o, thread, orig, timeoutSignal(ctx, o.deciderTimeoutMs)); } catch (error) {
+        if (hostAborted()) return passHostAbort();
         if (expired(error)) return pass("budget-exhausted", size);
+        deciderError = error;
       } finally { input.decideMs = Date.now() - tDecide; }
       if (remaining() <= 0) return pass("budget-exhausted", size);
       if (!d) {
         if (thread) {
-          log("decide", "decider-fail", input);
+          log("decide", "decider-fail", { ...input, ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
           return pass("no-decider-followup", size);
         }
         deciderFailed = true;
@@ -209,7 +225,7 @@ export async function onRequest(body, ctx) {
         summary.mode = mode = "rule";
       }
     }
-    if (deciderFailed) log("decide", `decider-fail-${mode}`, input);
+    if (deciderFailed) log("decide", `decider-fail-${mode}`, { ...input, ...(deciderError?.status && { deciderHttpStatus: deciderError.status }) });
 
     const langSuffix = cjkRatio(orig) >= 0.3 ? "" : "_en";
     const templateId = langSuffix ? "professional_en" : mode === "merged" ? "auto" : tier;
@@ -221,14 +237,18 @@ export async function onRequest(body, ctx) {
       if (!beginCall("optimizeTimeoutMs")) return pass("budget-exhausted", size);
       if (mode === "merged") {
         let parsed;
+        let raw;
         const tOpt = Date.now();
         try {
-          const raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
+          raw = await completion(o, mergedSystemPrompt(langSuffix), orig, timeoutSignal(ctx, o.optimizeTimeoutMs));
           parsed = parseMerged(raw, langSuffix);
         } catch (error) {
+          if (hostAborted()) return passHostAbort();
           if (expired(error)) return pass("budget-exhausted", size);
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
+        if (raw?.truncated) return pass("merged-truncated", input);
+        if (!raw && hostAborted()) return passHostAbort();
         if (!parsed) {
           if (!breaker.until && ++breaker.failures >= 5) breaker.until = Date.now() + 600_000;
           return pass("merged-fail", input);
@@ -239,9 +259,11 @@ export async function onRequest(body, ctx) {
       } else {
         const tOpt = Date.now();
         try { out = await optimize(o, orig, templateId, timeoutSignal(ctx, o.optimizeTimeoutMs)); } catch (error) {
-          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", size);
+          if (hostAborted()) return passHostAbort();
+          return pass(expired(error) ? "budget-exhausted" : "optimize-fail", { ...size, ...(error?.status && { httpStatus: error.status }) });
         } finally { input.optimizeMs = Date.now() - tOpt; }
         if (remaining() <= 0) return pass("budget-exhausted", size);
+        if (out && out.truncated) return pass("optimize-truncated", size);
         if (!out) return pass("optimize-empty", size);
         out = stripFence(out);
       }
@@ -249,7 +271,7 @@ export async function onRequest(body, ctx) {
 
     const origUnits = countUnits(orig), outUnits = countUnits(out);
     const audit = { ...input, out: out.length, outUnits, newText: out, markCache: fromCache };
-    const maxUnits = Math.min(Math.max(origUnits * (o.guardRatioLimit || 10), 60), 2000);
+    const maxUnits = guardCeiling(origUnits, o);
     if (outUnits < origUnits * 0.4) return pass("output-guard-short", audit);
     if (outUnits > maxUnits) return pass("output-guard-long", audit);
     if (!preservesTokens(orig, out)) return pass("output-guard-tokens", audit);
@@ -263,7 +285,8 @@ export async function onRequest(body, ctx) {
     const reason = fromCache ? "cache-hit" : o.dryRun ? "dry-run" : mode === "merged" ? "merged-optimized" : "optimized";
     log("optimize", reason, audit);
     return o.dryRun ? finish("skipped", reason, undefined, "dry-run") : finish("ready", reason, newBody);
-  } catch {
+  } catch (error) {
+    if (hostAborted()) return passHostAbort();
     return pass("error");
   }
 }
@@ -290,7 +313,7 @@ async function decide(o, thread, orig, signal) {
     }),
     signal,
   });
-  if (!res.ok) return undefined;
+  if (!res.ok) throw Object.assign(new Error(`gateway ${res.status}`), { status: res.status });
   const j = await res.json();
   const a = j && j.answers && j.answers.noul;
   if (!a || typeof a.choice !== "string") return undefined;
@@ -325,13 +348,20 @@ async function completion(o, system, user, signal) {
     }),
     signal,
   });
-  if (!res.ok) return undefined;
+  if (!res.ok) throw Object.assign(new Error(`gateway ${res.status}`), { status: res.status });
   const j = await res.json();
-  const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  const choice = j && j.choices && j.choices[0];
+  const c = choice && choice.message && choice.message.content;
+  // finish_reason=length → half a rewrite: callers pass the request through.
+  if (choice && choice.finish_reason === "length") return { truncated: true };
   return typeof c === "string" && c.trim() ? c : undefined;
 }
 
 const cjkRatio = (s) => ((s.match(/[㐀-鿿]/g) || []).length) / Math.max(s.length, 1);
+
+// Output-guard ceiling (hooks.mjs guardRatioLimit) and the pre-call
+// input-too-long check share this one formula.
+const guardCeiling = (origUnits, o) => Math.min(Math.max(origUnits * (o.guardRatioLimit || 10), 60), 2000);
 
 // Calls in flight retain their window's object. After expiry their completions
 // cannot change the next window's count or extend the old deadline.
