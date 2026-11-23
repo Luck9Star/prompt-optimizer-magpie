@@ -1,6 +1,6 @@
 // onRequest gate chain (design.md §4). Every failure path returns undefined:
 // fail-open — the plugin must never block or corrupt a request.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
@@ -17,8 +17,17 @@ import { record } from "./lib/stats.mjs";
 // renamed, removed or re-valued. `record()` is untouched.
 const AUDIT_FIELDS = [
   "decideVerdict", "decideConfidence", "deciderError", "deciderHttpStatus",
-  "errorKind", "errorMsg", "bypassPrefixHit", "httpStatus",
+  "errorKind", "errorMsg", "bypassPrefixHit", "httpStatus", "budgets",
 ];
+// gatewayTimeoutMs is a declaration the gateway reads from package.json;
+// it deliberately is NOT a runtime DEFAULTS entry. The catch keeps the hook
+// loadable when hooks.mjs is copied into a temp install without package.json
+// (debugDump regression test), using the declared default.
+const GATEWAY_TIMEOUT_MS = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).magpie.options.gatewayTimeoutMs;
+  } catch { return 25000; }
+})();
 const errMsg = (error) => redact(String(error?.message ?? "")).slice(0, 120);
 const errKind = (error) => error?.name;
 const DEFAULTS = {
@@ -134,7 +143,14 @@ export async function onRequest(body, ctx) {
   // The host gave up on this hook (ctx.signal aborted): not a gateway
   // failure — pass through, no failure reason, no breaker, "skipped".
   const hostAborted = () => ctx?.signal?.aborted === true;
-  const passHostAbort = () => pass("host-abort");
+  // R5: only a request that ALREADY ended in host-abort checks the budget
+  // arithmetic. No timeout behavior changes; pass() mapping stays as-is.
+  const passHostAbort = () => {
+    const d = o.deciderTimeoutMs, opt = o.optimizeTimeoutMs;
+    const gw = Number.isFinite(o.gatewayTimeoutMs) ? o.gatewayTimeoutMs : GATEWAY_TIMEOUT_MS;
+    if (d + opt + 1000 > gw) return pass("budget-short", { budgets: `${d}+${opt}>${gw}` });
+    return pass("host-abort");
+  };
   try {
     if (hostAborted()) return passHostAbort();
     if (o.enabled === false) return pass("disabled");
