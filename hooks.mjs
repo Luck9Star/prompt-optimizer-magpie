@@ -9,7 +9,7 @@ import { rewriteCacheKey, readRewrite, writeRewrite } from "./lib/rewrite-cache.
 import { countUnits, preservesTokens, redact } from "./lib/rewrite-guard.mjs";
 import { assignRollout } from "./lib/rollout.mjs";
 import { contentVersion, getTemplate } from "./templates/index.mjs";
-import { hasTools, opensTurn, lastUserText } from "./lib/turn.mjs";
+import { hasTools, opensTurn, lastUserText, stripLeadingNoise } from "./lib/turn.mjs";
 import { record } from "./lib/stats.mjs";
 
 const DEFAULTS = {
@@ -20,6 +20,17 @@ const DEFAULTS = {
   minChars: 6,
   maxChars: 12000,
   bypassPrefix: ["!!", "##"],
+  // Machine-narration anchors: when the user text (after stripping leading
+  // ACP / [Replying to] noise) starts with any of these strings, it's machine
+  // output (tool transcription, advisory, agent paraphrase) — never the
+  // user's own words. Trailing spaces are significant.
+  bypassAnchors: [
+    "→ ", "// ", "Tool result", "Attached image(s) from tool result",
+    "<advisory", "**agent**:", "_thinking:_",
+    "Automated capture turn — not a user reply", "<chat>", "<conversation>",
+    "The following is an aggregated review from other models",
+    "Supervised process", "[Compressed conversation section]",
+  ],
   // 机器注入包装（Hermes out-of-band/system-notice、title-request、progress-check、
   // job 完成通知、recap 等）不是人类输入，改写它们只会破坏协议语义且必然触发
   // output-guard。命中即整条放行，不进优化。
@@ -128,6 +139,15 @@ export async function onRequest(body, ctx) {
     // they wrap protocol text the rewrite must not touch.
     const wrappers = [].concat(o.bypassWrappers || []).filter(Boolean);
     if (typeof (ctx && ctx.query) === "string" && wrappers.length && wrappers.some((w) => ctx.query.includes(w))) return pass("bypass-wrapper");
+    // Machine-narration anchors: leading match after stripping ACP/[Replying to]
+    // noise. Real user text mentioning anchors mid-body must NOT bypass.
+    const anchors = [].concat(o.bypassAnchors || []).filter(Boolean);
+    const matchesAnchor = (text) => {
+      if (!anchors.length) return undefined;
+      const stripped = stripLeadingNoise(text);
+      return anchors.find((a) => stripped.startsWith(a));
+    };
+    if (typeof (ctx && ctx.query) === "string" && matchesAnchor(ctx.query)) return pass("bypass-anchor");
 
     const protocol = (ctx && ctx.protocol) || "chat";
     if (o.skipToolless && !hasTools(body, protocol)) return pass("no-tools");
@@ -147,6 +167,7 @@ export async function onRequest(body, ctx) {
       } catch {}
     }
     if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
+    if (matchesAnchor(orig)) return pass("bypass-anchor");
     if (wrappers.length && wrappers.some((w) => orig.includes(w))) return pass("bypass-wrapper");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length, inUnits: countUnits(orig) });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length, inUnits: countUnits(orig) });
