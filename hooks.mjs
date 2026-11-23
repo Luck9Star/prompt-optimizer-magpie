@@ -135,10 +135,9 @@ export async function onRequest(body, ctx) {
     }
     const prefixes = [].concat(o.bypassPrefix).filter(Boolean);
     if (typeof (ctx && ctx.query) === "string" && prefixes.some((p) => ctx.query.trimStart().startsWith(p))) return pass("bypass-prefix");
-    // Machine-injected wrappers (bypassWrappers) anywhere in the newest turn:
-    // they wrap protocol text the rewrite must not touch.
+    // Machine-injected wrappers (bypassWrappers) LEADING the newest turn
+    // (after noise strip): they wrap protocol text the rewrite must not touch.
     const wrappers = [].concat(o.bypassWrappers || []).filter(Boolean);
-    if (typeof (ctx && ctx.query) === "string" && wrappers.length && wrappers.some((w) => ctx.query.includes(w))) return pass("bypass-wrapper");
     // Machine-narration anchors: leading match after stripping ACP/[Replying to]
     // noise. Real user text mentioning anchors mid-body must NOT bypass.
     const anchors = [].concat(o.bypassAnchors || []).filter(Boolean);
@@ -148,6 +147,17 @@ export async function onRequest(body, ctx) {
       return anchors.find((a) => stripped.startsWith(a));
     };
     if (typeof (ctx && ctx.query) === "string" && matchesAnchor(ctx.query)) return pass("bypass-anchor");
+    // bypassWrappers: a config value "<tag>" means the message must START
+    // with that open tag (attributes allowed: <system-notice id="x">). A
+    // non-tag literal keeps plain startsWith for backwards compatibility.
+    // Closing tags and mid-body mentions never match — same leading-only
+    // rule as bypass-anchor, so wrappers cannot be spoofed from the body.
+    const wrapperRe = wrappers.map((w) => {
+      const m = /^<([A-Za-z][\w:-]*)>$/.exec(w);
+      return m ? { re: new RegExp(`^<${m[1]}(?:\\s[^>]*)?>`), lit: w } : { re: null, lit: w };
+    });
+    const matchesWrapper = (text) => wrapperRe.find(({ re, lit }) => re ? re.test(stripLeadingNoise(text)) : stripLeadingNoise(text).startsWith(lit));
+    if (typeof (ctx && ctx.query) === "string" && wrappers.length && matchesWrapper(ctx.query)) return pass("bypass-wrapper");
 
     const protocol = (ctx && ctx.protocol) || "chat";
     if (o.skipToolless && !hasTools(body, protocol)) return pass("no-tools");
@@ -168,7 +178,7 @@ export async function onRequest(body, ctx) {
     }
     if (prefixes.some((p) => orig.startsWith(p))) return pass("bypass-prefix");
     if (matchesAnchor(orig)) return pass("bypass-anchor");
-    if (wrappers.length && wrappers.some((w) => orig.includes(w))) return pass("bypass-wrapper");
+    if (wrappers.length && matchesWrapper(orig)) return pass("bypass-wrapper");
     if (orig.length < o.minChars) return pass("short-text", { in: orig.length, inUnits: countUnits(orig) });
     if (orig.length > o.maxChars) return pass("too-long", { in: orig.length, inUnits: countUnits(orig) });
 
