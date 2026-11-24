@@ -85,6 +85,8 @@ magpie plugin options prompt-optimizer-magpie '{
 | `minChars` / `maxChars` | `6` / `12000` | 用户原文长度窗口。`<minChars` 同步硬放行；`maxChars` 是防整本书粘贴的绝对上限，正常范围内的长文本交决策模型判断 |
 | `guardRatioLimit` | `10` | 输出护栏上限倍率：改写词元数上限 `clamp(原文词元 × N, 60, 2000)`。默认 ×10（生产实测：52 词元原文的结构化改写 430 词元曾被 ×5 误杀）；配置页可改 |
 | `bypassPrefix` | `["!!", "##"]` | 用户原文以任一前缀开头则原样发送。**推荐用 `##`**：omp/pi 等 TUI 会把 `!!` 当 shell 转义吃掉，根本到不了网关；claude 类 TUI 也把 `!!` 当 bash 输入。`##` 在所有实测 agent 上都能原样到达（claude/grok 已验证 bypass-prefix） |
+| `bypassAnchors` | 13 项，见代码默认 | 机器叙述**开头**锚点：用户原文剥掉前导 ACP 行 / `[Replying to: …]` 后以任一项开头，即判为机器转述（工具结果、advisory、agent 复述），`bypass-anchor` 直接放行，零模型调用。只匹配开头；正文中间提到不算。真人输入若恰好以 `Tool result`、`// `、`<chat>` 等开头会被跳过（不优化，请求不改） |
+| `bypassWrappers` | `["<system-notice>", "<title-request>", "<progress-check>", "<job>", "<recap>"]` | 机器注入包装的**开头开标签**：`<job>`、`<system-notice id="x">`（带属性也算）→ `bypass-wrapper` 放行。仅开头匹配；闭合标签、第二行及正文中间出现不命中 |
 | `bypassModels` | `[]` | 命中这些 `body.model` 直接放行（排除机器任务模型，如 `group/bili-summary`） |
 | `bypassAgents` | `[]` | 命中这些 `ctx.agent` 直接放行（不想被优化的 agent 白名单，任何网关调用前拦截） |
 | `cacheTtlMs` | `60000` | 按 agent、原文、网关、优化组、配置及实际模式、档位和 dryRun 隔离，在插件目录 `.cache.json.d/` 按键原子发布改写。≤0 停止缓存读写。旧 `.cache.json` 留在原处，不再读取 |
@@ -129,7 +131,10 @@ magpie plugin options prompt-optimizer-magpie '{
 
 例如 `"overrides":[{"agent":"cli","model":"group/interactive","budgetMs":350},{"agent":"batch","optimizerMode":"merged"}]`。350 毫秒从进入 hook 起算，判定和改写共用；耗尽时放行原文并记录 `budget-exhausted`，0 表示直接放行。目标模型匹配的是入站 `body.model`。实验组优先选择模式，预算仍生效；线程保留原有门禁。没有匹配项使用全局配置。
 
-钩子将审计事件写入 `~/.config/magpie/prompt-optimizer-magpie/stats/YYYY-MM-DD.ndjson`（本地时区日文件，按事件追加，写失败静默；数据目录在包外，update 不丢）。默认在 `optimized` / `dry-run` / `output-guard*` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / no-decider-followup / optimize-fail / optimize-empty / output-guard-short / output-guard-long / output-guard-tokens / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
+钩子将审计事件写入 `~/.config/magpie/prompt-optimizer-magpie/stats/YYYY-MM-DD.ndjson`（本地时区日文件，按事件追加，写失败静默；数据目录在包外，update 不丢）。默认在 `optimized` / `dry-run` / `output-guard*` / `no-span` / `decide` 事件上附带先脱敏、再截断的文本（`orig`/`rewritten`，默认 600 字），插件层可直接审计每次改写质量；`logRewrites: false` 可关闭。新增判定/失败归因字段（有值才写）：`decideVerdict` / `decideConfidence`（`decide` 事件记被拒判定，`summary` 记被接受判定）、`bypassPrefixHit`（命中的放行前缀）、`deciderError` / `deciderHttpStatus`、`errorKind` / `errorMsg`、`budgets`（`budget-short` 的预算算式）。
+
+**机器旁路**：`bypassAnchors` 开头命中 → `bypass-anchor`；`bypassWrappers` 开标签命中 → `bypass-wrapper`。二者都只看剥离前导噪声后的开头，正文中间出现不命中。**宿主取消**：宿主已取消本钩子时，若 `deciderTimeoutMs + optimizeTimeoutMs + 1000 > gatewayTimeoutMs`，记 `budget-short` 并附 `budgets`（如 `2500+25000>25000`），否则记 `host-abort`；未声明 `gatewayTimeoutMs` 按 1000 计。该标签只表示「宿主取消 + 所声明的预算装不下所声明的超时」，不证明取消由预算导致。
+`action`/`reason` 覆盖：`pass`（disabled / subagent / self-loop / bypass-model / bypass-anchor / bypass-wrapper / origin / bypass-prefix / no-tools / not-turn / no-user-text / short-text / too-long / host-abort / budget-short / no-decider-followup / optimize-fail / optimize-empty / output-guard-short / output-guard-long / output-guard-tokens / merged-fail / merged-passthrough / merged-circuit-open / error）、`decide`（decider-fail / decider-fail-rule / decider-fail-merged / followup / low-confidence）、`optimize`（dry-run / optimized / merged-optimized / cache-hit / no-span）。
 
 决策失败后，已有助手回复的线程直接放行；首轮按实际降级路径记录 `decider-fail-rule` 或 `decider-fail-merged`。Responses 携带 `previous_response_id` 时直接放行。每个请求只上报一次终态；实际回写报 `ready` 并附返回请求体的 UTF-8 字节数，干跑或普通放行报 `skipped, 0`，最终模型调用失败报 `unavailable, 0`。
 
